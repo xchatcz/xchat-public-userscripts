@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  const popUp = document.querySelector('modalwin');
+  const popUp = document.querySelector('#modalwin');
   if (!popUp) return;
   popUp.style.display = 'none';
 })();
