@@ -4,23 +4,10 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 ## Seznam skriptů
 
 ### `xchat-disable-room-popup.user.js`
-- **Historie místností**  
+- **Historie místností**
 - Skryje vyskakovací okno s potvrzením věku v seznamu místností
 
 ### `xchat-.user.js`
-- **Příkazy do místností**  
-- Přidá nové příkazy do místnosti:
-  * `/note nick poznámka` - Nová poznámka pro uživatele
-  * `/unnote nick` - Odebrání poznámky
-
-## Instalace
-
-K používání uživatelských skriptů je nutné mít nainstalovaný doplněk pro prohlížeč:
-
-- **Mozilla Firefox**: [Greasemonkey](https://addons.mozilla.org/en-US/firefox/addon/greasemonkey/)  
-- **Google Chrome, Opera**: [Tampermonkey](https://www.tampermonkey.net/)
-
-Poté stačí kliknout na soubor `.user.js` v tomto repozitáři a potvrdit instalaci v doplňku.
-
-Autor a maintainer: [Jan Elznic](https://janelznic.cz) (Elza) <jan@elznic.com>
-
+- **Příkazy do místností (Modchat / textpageng)**
+- Rozšiřuje příkazový systém v místnosti o administrátorské a uživatelské příkazy.
+- Skript se aktivuje pouze na textovém vstupu místnosti a funguje i při reloadu iframe.
