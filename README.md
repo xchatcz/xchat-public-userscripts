@@ -7,6 +7,11 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 - **Historie místností**  
 - Skryje vyskakovací okno s potvrzením věku v seznamu místností
 
+### `xchat-.user.js`
+- **Příkazy do místností**  
+- Přidá nové příkazy do místnosti:
+  * `/note nick poznámka` - Nová poznámka pro uživatele
+  * `/unnote nick` - Odebrání poznámky
 
 ## Instalace
 
