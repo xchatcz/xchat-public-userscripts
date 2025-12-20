@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         XChat Room Sidebar Hide
 // @namespace    https://www.xchat.cz/
-// @version      1.1
-// @description  Hides element #ffc on modchat pages (works in frames + late load)
+// @version      1.2
+// @description  Hides element #ffc or #ffd on modchat pages (works in frames + late load)
 // @match        https://www.xchat.cz/*/modchat*
 // @match        https://www.xchat.cz/modchat*
 // @run-at       document-start
@@ -12,25 +12,21 @@
 (function () {
 	'use strict';
 
-	function hideFfc() {
-		var el = document.getElementById('ffc');
-		if (el) {
-			el.style.setProperty('display', 'none', 'important');
-			return true;
+	const css = `
+		#ffc, #ffd {
+			display: none !important;
 		}
-		return false;
+	`;
+
+	function injectCss() {
+		const style = document.createElement('style');
+		style.textContent = css;
+		document.documentElement.appendChild(style);
 	}
 
-	// Try immediately
-	if (hideFfc()) return;
-
-	// Watch for late-added element
-	var obs = new MutationObserver(function () {
-		if (hideFfc()) obs.disconnect();
-	});
-
-	obs.observe(document.documentElement || document.body, {
-		childList: true,
-		subtree: true
-	});
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', injectCss);
+	} else {
+		injectCss();
+	}
 })();
