@@ -10,23 +10,23 @@
 // ==/UserScript==
 
 (function () {
-	'use strict';
+  'use strict';
 
-	const css = `
-		#ffc, #ffd {
-			display: none !important;
-		}
-	`;
+  const css = `
+    #ffc, #ffd {
+      display: none !important;
+    }
+  `;
 
-	function injectCss() {
-		const style = document.createElement('style');
-		style.textContent = css;
-		document.documentElement.appendChild(style);
-	}
+  function injectCss() {
+    const style = document.createElement('style');
+    style.textContent = css;
+    document.documentElement.appendChild(style);
+  }
 
-	if (document.readyState === 'loading') {
-		document.addEventListener('DOMContentLoaded', injectCss);
-	} else {
-		injectCss();
-	}
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', injectCss);
+  } else {
+    injectCss();
+  }
 })();
