@@ -3,6 +3,10 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 
 ## Seznam skriptů
 
+### `xchat-room-favourite-emojis.user.js`
+- **Oblíbení smajlíci v místnosti navíc
+- Zvětší frame a přidá další oblíbené smajlíky
+
 ### `xchat-disable-room-popup.user.js`
 - **Historie místností**
 - Skryje vyskakovací okno s potvrzením věku v seznamu místností
