@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         XChat Modchat Smilepage Enhancer
 // @namespace    elza.xchat
-// @version      1.0.2
-// @description  Adds custom smilies to smilepage frame and increases smiley frame height in room frameset
+// @version      1.0.3
+// @description  Adds custom smilies to smilepage frame and keeps smiley frame height stable in room frameset
 // @match        https://www.xchat.cz/*/modchat?op=smilepage*
 // @match        https://www.xchat.cz/*/modchat/room/*
 // @run-at       document-end
@@ -13,7 +13,7 @@
 	'use strict';
 
 	// --- Config ---
-	const smileyFrameHeightPx = 320; // <— set your desired height here (3rd row in rightframe frameset)
+	const smileyFrameHeightPx = 180; // 3rd row in rightframe frameset
 	const extraSmileyIdsRaw = [
 		141, 712, 3189, 921, 2009, 2373, 2374, 2583, 2653, 2731, 4548, 4661,
 		5016, 5068, 4068, 4069, 4146, 4594, 3093, 4142
@@ -55,7 +55,6 @@
 		const wrap = document.getElementById('crdiv1');
 		if (!wrap) return;
 
-		// Avoid duplicates on reload / re-run
 		const existing = wrap.querySelector('#tm-extra-smilies');
 		if (existing) existing.remove();
 
@@ -74,7 +73,6 @@
 
 		container.appendChild(p);
 
-		// Insert before bottom navigation ("upravit/další") if present, otherwise append.
 		const bottomNav = wrap.querySelector('#er, #mr')?.closest('p');
 		if (bottomNav && bottomNav.parentElement === wrap) {
 			wrap.insertBefore(container, bottomNav);
@@ -88,13 +86,54 @@
 		injectSmilies();
 	}
 
-	function handleRoomFrameset() {
-		const fs = document.getElementById('rightframe');
-		if (!fs) return;
+	// --- Keep frameset height stable ---
+	function desiredRowsValue() {
+		const h = Math.max(0, Math.floor(Number(smileyFrameHeightPx) || 0));
+		return `50,*,${h},0,0,0`;
+	}
 
-		const desired = `50,*,${Math.max(0, Math.floor(Number(smileyFrameHeightPx) || 0))},0,0,0`;
-		const current = fs.getAttribute('rows') || '';
-		if (current !== desired) fs.setAttribute('rows', desired);
+	function enforceRoomFramesetHeight() {
+		const fs = document.getElementById('rightframe');
+		if (!fs) return false;
+
+		const desired = desiredRowsValue();
+		if (fs.getAttribute('rows') !== desired) fs.setAttribute('rows', desired);
+		return true;
+	}
+
+	function keepEnforcingRoomFramesetHeight() {
+		// 1) immediate apply
+		enforceRoomFramesetHeight();
+
+		// 2) periodic re-apply (covers legacy scripts that rewrite rows attribute)
+		const intervalMs = 500;
+		setInterval(enforceRoomFramesetHeight, intervalMs);
+
+		// 3) observe attribute changes and revert instantly
+		const installObserver = () => {
+			const fs = document.getElementById('rightframe');
+			if (!fs) return;
+
+			const obs = new MutationObserver(() => {
+				const desired = desiredRowsValue();
+				if (fs.getAttribute('rows') !== desired) fs.setAttribute('rows', desired);
+			});
+
+			obs.observe(fs, { attributes: true, attributeFilter: ['rows'] });
+		};
+
+		// frameset can appear late; retry a bit
+		let tries = 0;
+		const maxTries = 30; // 30 * 250ms = 7.5s
+		const timer = setInterval(() => {
+			tries += 1;
+			if (enforceRoomFramesetHeight()) {
+				installObserver();
+				clearInterval(timer);
+			} else if (tries >= maxTries) {
+				clearInterval(timer);
+			}
+		}, 250);
 	}
 
 	function runWithRetries(fn, retries) {
@@ -111,8 +150,6 @@
 	const url = location.href;
 
 	if (url.includes('/modchat?op=smilepage')) {
-		// Runs inside the frame document due to @match.
-		// Also cover reloads / late DOM writes by retrying a few times.
 		if (document.readyState === 'loading') {
 			document.addEventListener('DOMContentLoaded', () => runWithRetries(handleSmilepage, 8), { once: true });
 		} else {
@@ -122,10 +159,9 @@
 
 	if (url.includes('/modchat/room/')) {
 		if (document.readyState === 'loading') {
-			document.addEventListener('DOMContentLoaded', () => runWithRetries(handleRoomFrameset, 8), { once: true });
+			document.addEventListener('DOMContentLoaded', keepEnforcingRoomFramesetHeight, { once: true });
 		} else {
-			runWithRetries(handleRoomFrameset, 8);
+			keepEnforcingRoomFramesetHeight();
 		}
 	}
 })();
-
