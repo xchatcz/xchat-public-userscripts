@@ -273,7 +273,7 @@
     return rows;
   }
 
-  function renderRowsIntoSection(clist, rows, mode) {
+  function renderRowsIntoSection(clist, rows, mode, source) {
     const existing = getExistingSection();
     if (existing) {
       existing.container.setAttribute('style', 'border-top: 0;');
@@ -281,12 +281,15 @@
         const p = document.createElement('p');
         p.textContent = '(nelze načíst)';
         existing.container.replaceChildren(p);
+        existing.container.dataset.xchatFavvipSource = source || 'error';
       } else if (rows && rows.length) {
         existing.container.replaceChildren(...rows);
+        existing.container.dataset.xchatFavvipSource = source || 'live';
       } else {
         const p = document.createElement('p');
         p.textContent = '(nikdo není online)';
         existing.container.replaceChildren(p);
+        existing.container.dataset.xchatFavvipSource = source || 'empty';
       }
       return true;
     }
@@ -298,9 +301,38 @@
       const p = document.createElement('p');
       p.textContent = '(nelze načíst)';
       built.container.appendChild(p);
+      built.container.dataset.xchatFavvipSource = source || 'error';
+    } else if (rows && rows.length) {
+      built.container.dataset.xchatFavvipSource = source || 'live';
+    } else {
+      built.container.dataset.xchatFavvipSource = source || 'empty';
     }
     insertSection(clist, built.fieldset, built.container);
     return true;
+  }
+
+  function getNicksAlreadyShownInRoom(clist) {
+    const result = new Set();
+    if (!clist) return result;
+
+    const anchors = clist.querySelectorAll('a[onclick*="userPopup("]');
+    for (const a of anchors) {
+      const container = a.closest('#xchat-favvip');
+      if (container) continue;
+
+      const onclick = String(a.getAttribute('onclick') || '');
+      const m = onclick.match(/userPopup\('((?:\\\\|\\'|[^'])*)'/);
+      if (m && m[1]) {
+        const nick = String(m[1]).replace(/\\'/g, "'").replace(/\\\\/g, "\\").trim();
+        if (nick) result.add(nick.toLowerCase());
+        continue;
+      }
+
+      const txt = String(a.textContent || '').trim();
+      if (txt) result.add(txt.toLowerCase());
+    }
+
+    return result;
   }
 
   function renderFromCacheIfFresh(clist) {
@@ -309,8 +341,20 @@
     const age = Date.now() - cache.ts;
     if (!Number.isFinite(age) || age < 0 || age > UPDATE_DEBOUNCE_MS * 2) return false;
 
-    const rows = buildRowsFromCachedUsers(cache.users);
-    renderRowsIntoSection(clist, rows);
+    const existing = getExistingSection();
+    if (existing && existing.container && existing.container.dataset.xchatFavvipSource === 'live') {
+      return false;
+    }
+
+    const present = getNicksAlreadyShownInRoom(clist);
+    const users = (cache.users || []).filter((u) => {
+      const nick = String(u && u.nick ? u.nick : '').trim();
+      if (!nick) return false;
+      return !present.has(nick.toLowerCase());
+    });
+
+    const rows = buildRowsFromCachedUsers(users);
+    renderRowsIntoSection(clist, rows, undefined, 'cache');
     return true;
   }
 
@@ -322,6 +366,9 @@
         const p = document.createElement('p');
         p.textContent = '(načítám...)';
         existing.container.replaceChildren(p);
+      }
+      if (!existing.container.dataset.xchatFavvipSource) {
+        existing.container.dataset.xchatFavvipSource = 'placeholder';
       }
       return;
     }
@@ -338,6 +385,7 @@
     const container = document.createElement('div');
     container.id = 'xchat-favvip';
     container.setAttribute('style', 'border-top: 0;');
+    container.dataset.xchatFavvipSource = 'placeholder';
 
     const p = document.createElement('p');
     p.textContent = '(načítám...)';
@@ -549,9 +597,11 @@
   }
 
   async function buildFavouriteRows(notes, signal) {
+    const presentInRoom = getNicksAlreadyShownInRoom(getClist());
     const favs = (notes || [])
       .filter((n) => n && n.vip === true)
       .filter((n) => Array.isArray(n.rooms) && n.rooms.length > 0)
+      .filter((n) => !presentInRoom.has(String(n.nick || '').trim().toLowerCase()))
       .sort((a, b) => String(a.nick).localeCompare(String(b.nick), 'cs'));
 
     if (!favs.length) return [];
@@ -587,7 +637,7 @@
   let pendingUpdate = false;
   let abortController = null;
   let lastUpdateAt = 0;
-  let didRenderCacheOnce = false;
+  const renderedCacheForClist = new WeakSet();
 
   function scheduleUpdate() {
     pendingUpdate = true;
@@ -625,8 +675,8 @@
 
       // On initial load (including iframe reloads), render cached data immediately (if fresh).
       // Do this only once to avoid overwriting newer DOM with older cached data.
-      if (!didRenderCacheOnce) {
-        didRenderCacheOnce = true;
+      if (!renderedCacheForClist.has(clist)) {
+        renderedCacheForClist.add(clist);
         renderFromCacheIfFresh(clist);
       }
 
@@ -659,14 +709,14 @@
 
       // 2) Only now mutate DOM in one go
       if (loadFailed) {
-        renderRowsIntoSection(clist, [], 'error');
+        renderRowsIntoSection(clist, [], 'error', 'error');
         return;
       }
 
       // Persist last successful state (even if empty).
       writeFavouriteOnlineUsersCache(cacheUsers);
 
-      renderRowsIntoSection(clist, rows);
+      renderRowsIntoSection(clist, rows, undefined, 'live');
     } finally {
       updateInFlight = false;
       if (pendingUpdate) scheduleUpdate();
@@ -676,6 +726,13 @@
   function tryHookOnce() {
     const clist = getClist();
     if (!clist) return false;
+
+    // If the list/frame reloads, ensure section appears immediately.
+    ensureFavouriteSectionNotEmpty(clist);
+    if (!renderedCacheForClist.has(clist)) {
+      renderedCacheForClist.add(clist);
+      renderFromCacheIfFresh(clist);
+    }
 
     if (clist.dataset.xchatFavVipHooked === '1') {
       scheduleUpdate();
