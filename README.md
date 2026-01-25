@@ -4,8 +4,13 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 ## Seznam skriptů
 
 ### `xchat-room-favourite-emojis.user.js`
-- **Oblíbení smajlíci v místnosti navíc
+- **Oblíbení smajlíci v místnosti navíc**
 - Zvětší frame a přidá další oblíbené smajlíky
+
+### `xchat-room-favourite-users.js`
+- **Oblíbení uživatelé (VIP z Poznámek)**
+- V seznamu uživatelů v modchatu přidá sekci „Oblíbení“ s uživateli, kteří mají v Poznámkách příznak VIP a jsou aktuálně online v místnosti.
+- Při reloadu načítá data okamžitě z cache (localStorage), aby nedocházelo k problikávání seznamu.
 
 ### `xchat-disable-room-popup.user.js`
 - **Historie místností**
