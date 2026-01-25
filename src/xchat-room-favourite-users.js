@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Favourite Users (VIP from Notes)
 // @namespace    xchat-room-favourite-users
-// @version      1.0.3
+// @version      1.0.4
 // @match        https://www.xchat.cz/*/modchat?op=userspage*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -307,11 +307,43 @@
     const cache = readFavouriteOnlineUsersCache();
     if (!cache) return false;
     const age = Date.now() - cache.ts;
-    if (!Number.isFinite(age) || age < 0 || age > UPDATE_DEBOUNCE_MS) return false;
+    if (!Number.isFinite(age) || age < 0 || age > UPDATE_DEBOUNCE_MS * 2) return false;
 
     const rows = buildRowsFromCachedUsers(cache.users);
     renderRowsIntoSection(clist, rows);
     return true;
+  }
+
+  function ensureFavouriteSectionNotEmpty(clist) {
+    const existing = getExistingSection();
+    if (existing) {
+      existing.container.setAttribute('style', 'border-top: 0;');
+      if (!existing.container.childNodes || existing.container.childNodes.length === 0) {
+        const p = document.createElement('p');
+        p.textContent = '(načítám...)';
+        existing.container.replaceChildren(p);
+      }
+      return;
+    }
+
+    if (!clist) return;
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'hr_line';
+    fieldset.id = 'xchat-favvip-legend';
+
+    const legend = document.createElement('legend');
+    legend.innerHTML = '&nbsp;Oblíbení&nbsp;';
+    fieldset.appendChild(legend);
+
+    const container = document.createElement('div');
+    container.id = 'xchat-favvip';
+    container.setAttribute('style', 'border-top: 0;');
+
+    const p = document.createElement('p');
+    p.textContent = '(načítám...)';
+    container.appendChild(p);
+
+    insertSection(clist, fieldset, container);
   }
 
   function setCrdivHeightPlus10000() {
@@ -555,6 +587,7 @@
   let pendingUpdate = false;
   let abortController = null;
   let lastUpdateAt = 0;
+  let didRenderCacheOnce = false;
 
   function scheduleUpdate() {
     pendingUpdate = true;
@@ -587,8 +620,15 @@
 
       setCrdivHeightPlus10000();
 
-      // On reload, render cached data immediately to avoid "blank"/flicker.
-      renderFromCacheIfFresh(clist);
+      // Ensure our section exists and is never empty.
+      ensureFavouriteSectionNotEmpty(clist);
+
+      // On initial load (including iframe reloads), render cached data immediately (if fresh).
+      // Do this only once to avoid overwriting newer DOM with older cached data.
+      if (!didRenderCacheOnce) {
+        didRenderCacheOnce = true;
+        renderFromCacheIfFresh(clist);
+      }
 
       const prefix = getPrefixFromLocation();
       if (!prefix) return;
