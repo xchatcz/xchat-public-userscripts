@@ -14,7 +14,7 @@
   const USER_API_URL = 'https://scripts.xchat.cz/scripts/user.php?nick=';
 
   // Avoid mutation storms / keep UI responsive.
-  const UPDATE_DEBOUNCE_MS = 5000;
+  const UPDATE_DEBOUNCE_MS = 15000;
   const USERINFO_CONCURRENCY = 5;
 
   const ICONS = {
@@ -208,18 +208,31 @@
   }
 
   function buildTitle(note, apiLastOnline) {
-    const parts = [];
-    if (note.rooms && note.rooms.length) {
-      parts.push(note.rooms.map((r) => `${r.roomName} (rid=${r.rid || 0})`).join(' | '));
-    } else if (apiLastOnline) {
-      parts.push(String(apiLastOnline));
-    } else if (note.online) {
-      parts.push(String(note.online));
+    if (note && Array.isArray(note.rooms) && note.rooms.length) {
+      return note.rooms
+        .map((r) => String(r && r.roomName ? r.roomName : '').trim())
+        .filter(Boolean)
+        .join(', ');
     }
-    if (apiLastOnline && (note.rooms && note.rooms.length)) {
-      parts.push(`Naposledy online: ${apiLastOnline}`);
-    }
-    return parts.join(' | ');
+
+    const last = apiLastOnline || (note ? note.online : '');
+    return last ? String(last) : '';
+  }
+
+  function setCrdivHeightPlus10000() {
+    const el = document.getElementById('crdiv1');
+    if (!el) return;
+
+    // Measure height without any inline styles (we overwrite them anyway).
+    el.removeAttribute('style');
+    const cs = getComputedStyle(el);
+    let h = parseFloat(cs && cs.height ? cs.height : '');
+    if (!Number.isFinite(h) || h <= 0) h = el.offsetHeight || el.clientHeight || 0;
+    const target = Math.max(0, Math.round(h + 10000));
+
+    // Overwrite existing inline styles and force !important.
+    el.style.cssText = '';
+    el.style.setProperty('height', `${target}px`, 'important');
   }
 
   function gmGetText(url, signal) {
@@ -464,6 +477,8 @@
 
       const clist = getClist();
       if (!clist) return;
+
+      setCrdivHeightPlus10000();
 
       const prefix = getPrefixFromLocation();
       if (!prefix) return;
