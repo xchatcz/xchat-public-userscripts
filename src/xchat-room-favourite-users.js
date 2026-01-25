@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Favourite Users (VIP from Notes)
 // @namespace    xchat-room-favourite-users
-// @version      1.0.2
+// @version      1.0.3
 // @match        https://www.xchat.cz/*/modchat?op=userspage*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -12,6 +12,7 @@
   'use strict';
 
   const USER_API_URL = 'https://scripts.xchat.cz/scripts/user.php?nick=';
+  const STORAGE_KEY_FAVOURITE_ONLINE_USERS = 'favourite_online_users';
 
   // Avoid mutation storms / keep UI responsive.
   const UPDATE_DEBOUNCE_MS = 15000;
@@ -217,6 +218,100 @@
 
     const last = apiLastOnline || (note ? note.online : '');
     return last ? String(last) : '';
+  }
+
+  function readFavouriteOnlineUsersCache() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_FAVOURITE_ONLINE_USERS);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const ts = Number(parsed.ts);
+      const users = Array.isArray(parsed.users) ? parsed.users : [];
+      if (!Number.isFinite(ts)) return null;
+      return { ts, users };
+    } catch {
+      return null;
+    }
+  }
+
+  function writeFavouriteOnlineUsersCache(users) {
+    try {
+      const payload = {
+        ts: Date.now(),
+        users: Array.isArray(users) ? users : [],
+      };
+      localStorage.setItem(STORAGE_KEY_FAVOURITE_ONLINE_USERS, JSON.stringify(payload));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  function buildRowsFromCachedUsers(users) {
+    const safe = Array.isArray(users) ? users : [];
+    const rows = [];
+    for (const u of safe) {
+      const nick = String(u && u.nick ? u.nick : '').trim();
+      if (!nick) continue;
+      const rooms = Array.isArray(u.rooms) ? u.rooms : [];
+      const note = {
+        nick,
+        rooms: rooms
+          .map((rn) => String(rn || '').trim())
+          .filter(Boolean)
+          .map((roomName) => ({ rid: 0, roomName })),
+        online: '',
+      };
+      const info = {
+        certified: !!(u && u.info && u.info.certified),
+        sex: Number.isFinite(Number(u && u.info ? u.info.sex : 0)) ? Number(u.info.sex) : 0,
+        star: Number.isFinite(Number(u && u.info ? u.info.star : 0)) ? Number(u.info.star) : 0,
+        lastOnline: '',
+      };
+      rows.push(buildFavouriteRow(note, info));
+    }
+    return rows;
+  }
+
+  function renderRowsIntoSection(clist, rows, mode) {
+    const existing = getExistingSection();
+    if (existing) {
+      existing.container.setAttribute('style', 'border-top: 0;');
+      if (mode === 'error') {
+        const p = document.createElement('p');
+        p.textContent = '(nelze načíst)';
+        existing.container.replaceChildren(p);
+      } else if (rows && rows.length) {
+        existing.container.replaceChildren(...rows);
+      } else {
+        const p = document.createElement('p');
+        p.textContent = '(nikdo není online)';
+        existing.container.replaceChildren(p);
+      }
+      return true;
+    }
+
+    if (!clist) return false;
+    const built = buildSectionDom(Array.isArray(rows) ? rows : []);
+    if (mode === 'error') {
+      built.container.replaceChildren();
+      const p = document.createElement('p');
+      p.textContent = '(nelze načíst)';
+      built.container.appendChild(p);
+    }
+    insertSection(clist, built.fieldset, built.container);
+    return true;
+  }
+
+  function renderFromCacheIfFresh(clist) {
+    const cache = readFavouriteOnlineUsersCache();
+    if (!cache) return false;
+    const age = Date.now() - cache.ts;
+    if (!Number.isFinite(age) || age < 0 || age > UPDATE_DEBOUNCE_MS) return false;
+
+    const rows = buildRowsFromCachedUsers(cache.users);
+    renderRowsIntoSection(clist, rows);
+    return true;
   }
 
   function setCrdivHeightPlus10000() {
@@ -436,11 +531,23 @@
       if (signal && signal.aborted) return null;
       const info = await fetchUserInfo(note.nick, signal);
       if (signal && signal.aborted) return null;
-      return buildFavouriteRow(note, info || defaultInfo);
+      return { note, info: info || defaultInfo };
     })));
 
     await yieldToUi();
-    return results.filter(Boolean);
+    const items = results.filter(Boolean);
+    return {
+      rows: items.map((it) => buildFavouriteRow(it.note, it.info)),
+      cacheUsers: items.map((it) => ({
+        nick: String(it.note.nick || '').trim(),
+        rooms: Array.isArray(it.note.rooms) ? it.note.rooms.map((r) => String(r && r.roomName ? r.roomName : '').trim()).filter(Boolean) : [],
+        info: {
+          certified: !!it.info.certified,
+          sex: Number.isFinite(Number(it.info.sex)) ? Number(it.info.sex) : 0,
+          star: Number.isFinite(Number(it.info.star)) ? Number(it.info.star) : 0,
+        },
+      })),
+    };
   }
 
   let updateTimer = null;
@@ -480,6 +587,9 @@
 
       setCrdivHeightPlus10000();
 
+      // On reload, render cached data immediately to avoid "blank"/flicker.
+      renderFromCacheIfFresh(clist);
+
       const prefix = getPrefixFromLocation();
       if (!prefix) return;
 
@@ -492,12 +602,15 @@
       // 1) Gather ALL data first (no DOM touching / no flicker)
       let rows = [];
       let loadFailed = false;
+      let cacheUsers = [];
       try {
         const notesRes = await loadNotes(prefix, signal);
         if (signal.aborted) return;
         if (!notesRes.ok) throw new Error(String(notesRes.error || 'Failed to load notes'));
 
-        rows = await buildFavouriteRows(notesRes.notes, signal);
+        const built = await buildFavouriteRows(notesRes.notes, signal);
+        rows = built.rows;
+        cacheUsers = built.cacheUsers;
         if (signal.aborted) return;
       } catch {
         if (signal.aborted) return;
@@ -505,29 +618,15 @@
       }
 
       // 2) Only now mutate DOM in one go
-      if (existing) {
-        if (loadFailed) {
-          const p = document.createElement('p');
-          p.textContent = '(nelze načíst)';
-          existing.container.replaceChildren(p);
-        } else if (rows.length) {
-          existing.container.replaceChildren(...rows);
-        } else {
-          const p = document.createElement('p');
-          p.textContent = '(nikdo není online)';
-          existing.container.replaceChildren(p);
-        }
+      if (loadFailed) {
+        renderRowsIntoSection(clist, [], 'error');
         return;
       }
 
-      const built = loadFailed ? buildSectionDom([]) : buildSectionDom(rows);
-      if (loadFailed) {
-        built.container.replaceChildren();
-        const p = document.createElement('p');
-        p.textContent = '(nelze načíst)';
-        built.container.appendChild(p);
-      }
-      insertSection(clist, built.fieldset, built.container);
+      // Persist last successful state (even if empty).
+      writeFavouriteOnlineUsersCache(cacheUsers);
+
+      renderRowsIntoSection(clist, rows);
     } finally {
       updateInFlight = false;
       if (pendingUpdate) scheduleUpdate();
