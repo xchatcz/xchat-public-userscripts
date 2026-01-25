@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Favourite Users (VIP from Notes)
 // @namespace    xchat-room-favourite-users
-// @version      1.0.4
+// @version      1.0.5
 // @match        https://www.xchat.cz/*/modchat?op=userspage*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -13,6 +13,7 @@
 
   const USER_API_URL = 'https://scripts.xchat.cz/scripts/user.php?nick=';
   const STORAGE_KEY_FAVOURITE_ONLINE_USERS = 'favourite_online_users';
+  const CACHE_MAX_AGE_LOADING_MS = 60 * 1000;
 
   // Avoid mutation storms / keep UI responsive.
   const UPDATE_DEBOUNCE_MS = 15000;
@@ -282,14 +283,24 @@
         p.textContent = '(nelze načíst)';
         existing.container.replaceChildren(p);
         existing.container.dataset.xchatFavvipSource = source || 'error';
+      } else if (mode === 'confirmed-empty') {
+        const p = document.createElement('p');
+        p.textContent = '(nikdo není online)';
+        existing.container.replaceChildren(p);
+        existing.container.dataset.xchatFavvipSource = source || 'empty';
+      } else if (mode === 'filtered-empty') {
+        const p = document.createElement('p');
+        p.textContent = '(žádní oblíbení v jiných místnostech)';
+        existing.container.replaceChildren(p);
+        existing.container.dataset.xchatFavvipSource = source || 'empty';
       } else if (rows && rows.length) {
         existing.container.replaceChildren(...rows);
         existing.container.dataset.xchatFavvipSource = source || 'live';
       } else {
         const p = document.createElement('p');
-        p.textContent = '(nikdo není online)';
+        p.textContent = '(načítám...)';
         existing.container.replaceChildren(p);
-        existing.container.dataset.xchatFavvipSource = source || 'empty';
+        existing.container.dataset.xchatFavvipSource = source || 'loading';
       }
       return true;
     }
@@ -302,10 +313,26 @@
       p.textContent = '(nelze načíst)';
       built.container.appendChild(p);
       built.container.dataset.xchatFavvipSource = source || 'error';
+    } else if (mode === 'confirmed-empty') {
+      built.container.replaceChildren();
+      const p = document.createElement('p');
+      p.textContent = '(nikdo není online)';
+      built.container.appendChild(p);
+      built.container.dataset.xchatFavvipSource = source || 'empty';
+    } else if (mode === 'filtered-empty') {
+      built.container.replaceChildren();
+      const p = document.createElement('p');
+      p.textContent = '(žádní oblíbení v jiných místnostech)';
+      built.container.appendChild(p);
+      built.container.dataset.xchatFavvipSource = source || 'empty';
     } else if (rows && rows.length) {
       built.container.dataset.xchatFavvipSource = source || 'live';
     } else {
-      built.container.dataset.xchatFavvipSource = source || 'empty';
+      built.container.replaceChildren();
+      const p = document.createElement('p');
+      p.textContent = '(načítám...)';
+      built.container.appendChild(p);
+      built.container.dataset.xchatFavvipSource = source || 'loading';
     }
     insertSection(clist, built.fieldset, built.container);
     return true;
@@ -335,11 +362,11 @@
     return result;
   }
 
-  function renderFromCacheIfFresh(clist) {
+  function renderFromCacheIfFresh(clist, maxAgeMs) {
     const cache = readFavouriteOnlineUsersCache();
     if (!cache) return false;
     const age = Date.now() - cache.ts;
-    if (!Number.isFinite(age) || age < 0 || age > UPDATE_DEBOUNCE_MS * 2) return false;
+    if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) return false;
 
     const existing = getExistingSection();
     if (existing && existing.container && existing.container.dataset.xchatFavvipSource === 'live') {
@@ -598,13 +625,21 @@
 
   async function buildFavouriteRows(notes, signal) {
     const presentInRoom = getNicksAlreadyShownInRoom(getClist());
-    const favs = (notes || [])
+    const allVipOnline = (notes || [])
       .filter((n) => n && n.vip === true)
-      .filter((n) => Array.isArray(n.rooms) && n.rooms.length > 0)
+      .filter((n) => Array.isArray(n.rooms) && n.rooms.length > 0);
+
+    const favs = allVipOnline
       .filter((n) => !presentInRoom.has(String(n.nick || '').trim().toLowerCase()))
       .sort((a, b) => String(a.nick).localeCompare(String(b.nick), 'cs'));
 
-    if (!favs.length) return [];
+    if (!favs.length) {
+      return {
+        rows: [],
+        cacheUsers: [],
+        onlineVipCount: allVipOnline.length,
+      };
+    }
 
     const limiter = createLimiter(USERINFO_CONCURRENCY);
     const defaultInfo = { certified: false, sex: 0, star: 0, lastOnline: '' };
@@ -629,6 +664,7 @@
           star: Number.isFinite(Number(it.info.star)) ? Number(it.info.star) : 0,
         },
       })),
+      onlineVipCount: allVipOnline.length,
     };
   }
 
@@ -673,11 +709,19 @@
       // Ensure our section exists and is never empty.
       ensureFavouriteSectionNotEmpty(clist);
 
+      // If we're still showing a loading message, prefer showing cached list (≤ 1 minute).
+      // This runs on every update tick to fight frame reloads / transient blanks.
+      const existingNow = getExistingSection();
+      const isLoadingNow = existingNow && existingNow.container && existingNow.container.dataset.xchatFavvipSource === 'loading';
+      if (isLoadingNow) {
+        renderFromCacheIfFresh(clist, CACHE_MAX_AGE_LOADING_MS);
+      }
+
       // On initial load (including iframe reloads), render cached data immediately (if fresh).
       // Do this only once to avoid overwriting newer DOM with older cached data.
       if (!renderedCacheForClist.has(clist)) {
         renderedCacheForClist.add(clist);
-        renderFromCacheIfFresh(clist);
+        renderFromCacheIfFresh(clist, UPDATE_DEBOUNCE_MS * 2);
       }
 
       const prefix = getPrefixFromLocation();
@@ -693,6 +737,7 @@
       let rows = [];
       let loadFailed = false;
       let cacheUsers = [];
+      let onlineVipCount = 0;
       try {
         const notesRes = await loadNotes(prefix, signal);
         if (signal.aborted) return;
@@ -701,6 +746,7 @@
         const built = await buildFavouriteRows(notesRes.notes, signal);
         rows = built.rows;
         cacheUsers = built.cacheUsers;
+        onlineVipCount = built.onlineVipCount || 0;
         if (signal.aborted) return;
       } catch {
         if (signal.aborted) return;
@@ -709,7 +755,27 @@
 
       // 2) Only now mutate DOM in one go
       if (loadFailed) {
+        // Only show error if we don't already have some list displayed.
+        const existing = getExistingSection();
+        const src = existing && existing.container ? String(existing.container.dataset.xchatFavvipSource || '') : '';
+        const hasAnyNickRows = existing && existing.container && existing.container.querySelector('p[data-nick]');
+        if (src === 'live' || src === 'cache' || hasAnyNickRows) return;
         renderRowsIntoSection(clist, [], 'error', 'error');
+        return;
+      }
+
+      // Only show "(nikdo není online)" if the *original online VIP list from Notes* is truly empty.
+      // If it becomes empty only due to filtering out users already shown in this room, show a different message.
+      if (!rows.length) {
+        if (!onlineVipCount) {
+          writeFavouriteOnlineUsersCache([]);
+          renderRowsIntoSection(clist, [], 'confirmed-empty', 'live');
+          return;
+        }
+
+        // Persist state and show a non-misleading message.
+        writeFavouriteOnlineUsersCache([]);
+        renderRowsIntoSection(clist, [], 'filtered-empty', 'live');
         return;
       }
 
@@ -731,7 +797,14 @@
     ensureFavouriteSectionNotEmpty(clist);
     if (!renderedCacheForClist.has(clist)) {
       renderedCacheForClist.add(clist);
-      renderFromCacheIfFresh(clist);
+      renderFromCacheIfFresh(clist, UPDATE_DEBOUNCE_MS * 2);
+    }
+
+    // If we're showing loading, refresh from cache (≤ 1 minute).
+    const existing = getExistingSection();
+    const isLoading = existing && existing.container && existing.container.dataset.xchatFavvipSource === 'loading';
+    if (isLoading) {
+      renderFromCacheIfFresh(clist, CACHE_MAX_AGE_LOADING_MS);
     }
 
     if (clist.dataset.xchatFavVipHooked === '1') {
@@ -755,5 +828,10 @@
     tryHookOnce();
   });
   mo.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Heartbeat refresh: keeps cache render + live refresh running even without DOM mutations.
+  setInterval(() => {
+    tryHookOnce();
+  }, UPDATE_DEBOUNCE_MS);
 })();
 
