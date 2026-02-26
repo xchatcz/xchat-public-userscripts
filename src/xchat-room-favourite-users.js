@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Favourite Users (VIP from Notes)
 // @namespace    xchat-room-favourite-users
-// @version      1.0.5
+// @version      1.0.6
 // @match        https://www.xchat.cz/*/modchat?op=userspage*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -14,6 +14,7 @@
   const USER_API_URL = 'https://scripts.xchat.cz/scripts/user.php?nick=';
   const STORAGE_KEY_FAVOURITE_ONLINE_USERS = 'favourite_online_users';
   const CACHE_MAX_AGE_LOADING_MS = 60 * 1000;
+  const STYLE_ID_NICKS_H3 = 'xchat-favvip-h3-style';
 
   // Avoid mutation storms / keep UI responsive.
   const UPDATE_DEBOUNCE_MS = 15000;
@@ -51,6 +52,14 @@
 
   function getClist() {
     return document.getElementById('clist');
+  }
+
+  function ensureFrameCss() {
+    if (document.getElementById(STYLE_ID_NICKS_H3)) return;
+    const style = document.createElement('style');
+    style.id = STYLE_ID_NICKS_H3;
+    style.textContent = 'h3 { width: 64px; font-size: 85%; overflow: hidden; } #cr2 { left: -2px; } #cr3 { left: -4px; }';
+    (document.head || document.documentElement).appendChild(style);
   }
 
   async function decodeIso88592(res) {
@@ -421,22 +430,6 @@
     insertSection(clist, fieldset, container);
   }
 
-  function setCrdivHeightPlus10000() {
-    const el = document.getElementById('crdiv1');
-    if (!el) return;
-
-    // Measure height without any inline styles (we overwrite them anyway).
-    el.removeAttribute('style');
-    const cs = getComputedStyle(el);
-    let h = parseFloat(cs && cs.height ? cs.height : '');
-    if (!Number.isFinite(h) || h <= 0) h = el.offsetHeight || el.clientHeight || 0;
-    const target = Math.max(0, Math.round(h + 10000));
-
-    // Overwrite existing inline styles and force !important.
-    el.style.cssText = '';
-    el.style.setProperty('height', `${target}px`, 'important');
-  }
-
   function gmGetText(url, signal) {
     return new Promise((resolve) => {
       let done = false;
@@ -704,8 +697,6 @@
       const clist = getClist();
       if (!clist) return;
 
-      setCrdivHeightPlus10000();
-
       // Ensure our section exists and is never empty.
       ensureFavouriteSectionNotEmpty(clist);
 
@@ -790,6 +781,8 @@
   }
 
   function tryHookOnce() {
+    ensureFrameCss();
+
     const clist = getClist();
     if (!clist) return false;
 
