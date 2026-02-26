@@ -45,7 +45,7 @@
   function renameSettingsTabInDocument(doc) {
     if (!doc) return false;
 
-    const targets = doc.querySelectorAll('#cr2 h3 a[href*="tab=settings"], #cr2 h3 a, #cr2 a');
+    const targets = doc.querySelectorAll('#cr2 h3 a[href*="tab=settings"], #cr2 > h3 a');
     let changed = false;
 
     targets.forEach((link) => {
