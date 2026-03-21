@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Favourite Users (VIP from Notes)
 // @namespace    xchat-room-favourite-users
-// @version      1.0.6
+// @version      1.0.7
 // @match        https://www.xchat.cz/*/modchat?op=userspage*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -10,6 +10,13 @@
 
 (function () {
   'use strict';
+
+  // Bail out immediately on any page that is NOT op=userspage.
+  // This prevents DOM mutations on startframe and similar pages.
+  try {
+    const opParam = new URLSearchParams(location.search).get('op') || '';
+    if (opParam !== 'userspage') return;
+  } catch { return; }
 
   const USER_API_URL = 'https://scripts.xchat.cz/scripts/user.php?nick=';
   const STORAGE_KEY_FAVOURITE_ONLINE_USERS = 'favourite_online_users';
