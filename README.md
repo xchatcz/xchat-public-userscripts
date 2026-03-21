@@ -3,6 +3,9 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 
 ## Seznam skriptů
 
+### `xchat-forum-favourite.user.js`
+- **Fórum – Oblíbené**  
+- Přidává tlačítko pro zobrazení pouze nových nebo všech příspěvků.
 
 ### `xchat-room-favourite-emojis.user.js`
 - **Oblíbení smajlíci v místnosti navíc**
