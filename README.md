@@ -1,4 +1,4 @@
-# xchat-userscripts
+# xchat-public-userscripts
 Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 
 ## Seznam skriptů
