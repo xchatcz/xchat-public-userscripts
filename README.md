@@ -7,6 +7,10 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 - **Fórum – Oblíbené**  
 - Přidává tlačítko pro zobrazení pouze nových nebo všech příspěvků.
 
+### `xchat-messages-replyon-button-fix.user.js`
+- **Vzkazy - Odpověď**  
+- Opravuje funkčnost náhledu původního vzkazu a vložení textu do odpovědi
+
 ### `xchat-room-favourite-emojis.user.js`
 - **Oblíbení smajlíci v místnosti navíc**
 - Zvětší frame a přidá další oblíbené smajlíky
