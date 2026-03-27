@@ -11,6 +11,10 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 - **Vzkazy - Odpověď**  
 - Opravuje funkčnost náhledu původního vzkazu a vložení textu do odpovědi
 
+### `xchat-messages-copy-on-click.js`
+- **Vzkazy - Kopírování detailu zprávy**
+- Na stránce čtení přijatého vzkazu přidá tlačítko „Kopírovat“, které zkopíruje odesílatele, příjemce, předmět, datum a čas i obsah zprávy.
+
 ### `xchat-room-favourite-emojis.user.js`
 - **Oblíbení smajlíci v místnosti navíc**
 - Zvětší frame a přidá další oblíbené smajlíky
