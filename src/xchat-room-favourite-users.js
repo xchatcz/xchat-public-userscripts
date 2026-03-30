@@ -788,6 +788,7 @@
   }
 
   function tryHookOnce() {
+    if (!isUsersPage()) return false;
     ensureFrameCss();
 
     const clist = getClist();
