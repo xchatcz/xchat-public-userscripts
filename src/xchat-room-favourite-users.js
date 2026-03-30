@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Favourite Users (VIP from Notes)
 // @namespace    xchat-room-favourite-users
-// @version      1.0.7
+// @version      1.0.9
 // @match        https://www.xchat.cz/*/modchat?op=userspage*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -195,6 +195,9 @@
 
     for (let p = 2; p <= maxPage; p++) {
       if (signal && signal.aborted) return { ok: false, notes: [], error: 'aborted' };
+      // Pause between page fetches so startframe's AJAX polling can
+      // acquire the PHP session lock in between our requests.
+      await sleep(500);
       const pageRes = await fetchNotesPage(prefix, p, signal);
       if (!pageRes.ok) return { ok: false, notes: [], error: pageRes.error || `Failed to load notes page ${p}` };
       all.push(...parseNotesFromDoc(pageRes.doc));
@@ -293,7 +296,6 @@
   function renderRowsIntoSection(clist, rows, mode, source) {
     const existing = getExistingSection();
     if (existing) {
-      existing.container.setAttribute('style', 'border-top: 0;');
       if (mode === 'error') {
         const p = document.createElement('p');
         p.textContent = '(nelze načíst)';
@@ -404,7 +406,6 @@
   function ensureFavouriteSectionNotEmpty(clist) {
     const existing = getExistingSection();
     if (existing) {
-      existing.container.setAttribute('style', 'border-top: 0;');
       if (!existing.container.childNodes || existing.container.childNodes.length === 0) {
         const p = document.createElement('p');
         p.textContent = '(načítám...)';
@@ -546,20 +547,17 @@
   }
 
   function insertSection(clist, fieldset, container) {
-    const away = clist.querySelector('#away');
-    if (away && away.parentNode === clist) {
-      if (away.nextSibling) {
-        clist.insertBefore(fieldset, away.nextSibling);
-        clist.insertBefore(container, fieldset.nextSibling);
-      } else {
-        clist.appendChild(fieldset);
-        clist.appendChild(container);
-      }
-      return;
+    // Insert AFTER #clist as siblings, not inside it.
+    // Placing elements inside #clist interfered with xchat's own
+    // monitoring of #clist structure (child count / mutations),
+    // which triggered inter-frame refresh and message duplication.
+    if (clist.nextSibling) {
+      clist.parentNode.insertBefore(fieldset, clist.nextSibling);
+      clist.parentNode.insertBefore(container, fieldset.nextSibling);
+    } else {
+      clist.parentNode.appendChild(fieldset);
+      clist.parentNode.appendChild(container);
     }
-
-    clist.appendChild(fieldset);
-    clist.appendChild(container);
   }
 
   function buildSectionDom(rows) {
@@ -725,12 +723,6 @@
       const prefix = getPrefixFromLocation();
       if (!prefix) return;
 
-      // If we already have a section, ensure it has the requested inline style.
-      const existing = getExistingSection();
-      if (existing) {
-        existing.container.setAttribute('style', 'border-top: 0;');
-      }
-
       // 1) Gather ALL data first (no DOM touching / no flicker)
       let rows = [];
       let loadFailed = false;
@@ -817,22 +809,12 @@
     return true;
   }
 
-  // initial + rehook for iframe reloads / partial loads
+  // initial + periodic poll for #clist detection and refresh.
+  // No MutationObserver — DOM mutations inside #clist were triggering xchat's
+  // own inter-frame refresh mechanism and causing message duplication on startframe.
   tryHookOnce();
-
-  const bootTimer = setInterval(() => {
-    const ok = tryHookOnce();
-    if (ok) clearInterval(bootTimer);
-  }, 400);
-
-  const mo = new MutationObserver(() => {
-    tryHookOnce();
-  });
-  mo.observe(document.documentElement, { childList: true, subtree: true });
-
-  // Heartbeat refresh: keeps cache render + live refresh running even without DOM mutations.
   setInterval(() => {
     tryHookOnce();
-  }, UPDATE_DEBOUNCE_MS);
+  }, 2000);
 })();
 
