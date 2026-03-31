@@ -958,6 +958,8 @@
           rooms[rid] = roomName;
           setSetting('rooms', rooms);
         }
+        // Show RID in parentheses after room name link
+        roomLinks[ri].parentNode.insertBefore(document.createTextNode(' (' + rid + ')'), roomLinks[ri].nextSibling);
         break;
       }
     }
@@ -968,6 +970,17 @@
     while ((node = walker.nextNode())) {
       if (node.textContent.indexOf('Nemluvil jsi:') !== -1) {
         node.textContent = node.textContent.replace('Nemluvil jsi:', 'IDLE:');
+      }
+    }
+
+    // Remove "smazat" link
+    var allLinks = document.querySelectorAll('a');
+    for (var si = 0; si < allLinks.length; si++) {
+      if (/^smazat$/i.test(allLinks[si].textContent.trim())) {
+        var prev = allLinks[si].previousSibling;
+        if (prev && prev.nodeType === Node.TEXT_NODE) prev.textContent = prev.textContent.replace(/\s+$/, '');
+        allLinks[si].remove();
+        break;
       }
     }
 
@@ -1886,13 +1899,13 @@
 
   function initStartframe() {
     injectStyles();
+    captureAllDivs();
     processAll();
     restoreBoardFilter();
     restoreHighlight();
     restoreKickHighlight();
     markAllBadCommands();
     restoreHideBadCommands();
-    captureAllDivs();
 
     var detectedNick = getMyNick();
     if (detectedNick) setSetting('myNick', detectedNick);
@@ -1904,9 +1917,9 @@
       for (const mut of mutations) {
         for (const node of mut.addedNodes) {
           if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'DIV') {
+            captureDiv(node);
             processEntryDiv(node);
             markBadCommandDiv(node);
-            captureDiv(node);
           }
         }
       }
