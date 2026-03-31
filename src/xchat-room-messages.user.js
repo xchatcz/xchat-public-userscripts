@@ -1130,20 +1130,109 @@
         if (textpageUrl && !/^https?:/.test(textpageUrl)) textpageUrl = base + textpageUrl.replace(/^\//, '');
         if (userpageUrl && !/^https?:/.test(userpageUrl)) userpageUrl = base + userpageUrl.replace(/^\//, '');
 
-        // Load startframe (messages)
+        // ── Board polling via AJAX (no iframe) ──
+        var boardUrl = '';
         if (startframeUrl) {
-          var sfIframe = document.createElement('iframe');
-          sfIframe.src = startframeUrl;
-          sfIframe.setAttribute('allow', 'autoplay');
-          body.appendChild(sfIframe);
+          boardUrl = startframeUrl
+            .replace(/op=startframe/, 'op=board')
+            .replace(/[&?]js=\d+/, '');
+        }
+        var pollFn = function () {
+          if (!boardUrl || !floatingWindows[key]) return;
+          fetch(boardUrl, { credentials: 'include' })
+            .then(function (r2) { return r2.text(); })
+            .then(function (boardHtml) {
+              if (!floatingWindows[key]) return;
+              var atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 10;
+              body.innerHTML = boardHtml;
+              if (atBottom) body.scrollTop = body.scrollHeight;
+            })
+            .catch(function () {});
+        };
+        if (boardUrl) {
+          body.textContent = 'Nahr\u00e1v\u00e1m\u2026';
+          pollFn();
+          floatingWindows[key].pollTimer = setInterval(pollFn, 4000);
         }
 
-        // Load textpage (input)
+        // ── Fetch textpage form data for sending ──
         if (textpageUrl) {
-          var tpIframe = document.createElement('iframe');
-          tpIframe.src = textpageUrl;
-          footer.appendChild(tpIframe);
+          fetch(textpageUrl, { credentials: 'include' })
+            .then(function (r3) { return r3.text(); })
+            .then(function (tpHtml) {
+              if (!floatingWindows[key]) return;
+              var tpDoc = parser.parseFromString(tpHtml, 'text/html');
+              var form = tpDoc.querySelector('form');
+              if (!form) return;
+              var action = form.getAttribute('action') || '';
+              if (action && !/^https?:/.test(action)) {
+                action = base + action.replace(/^\//, '');
+              }
+              var hiddenFields = {};
+              var hiddens = form.querySelectorAll('input[type="hidden"]');
+              for (var hi = 0; hi < hiddens.length; hi++) {
+                hiddenFields[hiddens[hi].name] = hiddens[hi].value;
+              }
+              floatingWindows[key].formAction = action;
+              floatingWindows[key].formFields = hiddenFields;
+            })
+            .catch(function () {});
         }
+
+        // ── Input UI ──
+        var fwInput = document.createElement('input');
+        fwInput.type = 'text';
+        fwInput.className = 'xchat-fw-input';
+        fwInput.placeholder = 'Napi\u0161te zpr\u00e1vu\u2026';
+        var sendBtn = document.createElement('button');
+        sendBtn.className = 'xchat-fw-send';
+        sendBtn.innerHTML = '&#9654;';
+        sendBtn.title = 'Poslat';
+        var doSend = function () {
+          var text = fwInput.value.trim();
+          if (!text) return;
+          var fwData = floatingWindows[key];
+          if (!fwData || !fwData.formAction) return;
+          fwInput.value = '';
+          // Submit via hidden iframe (preserves ISO-8859-2 encoding)
+          var iframeName = 'xchat-fw-submit-' + Date.now();
+          var hIframe = document.createElement('iframe');
+          hIframe.name = iframeName;
+          hIframe.style.cssText = 'display:none';
+          document.body.appendChild(hIframe);
+          var fakeForm = document.createElement('form');
+          fakeForm.method = 'post';
+          fakeForm.action = fwData.formAction;
+          fakeForm.target = iframeName;
+          fakeForm.style.cssText = 'display:none';
+          var fields = fwData.formFields;
+          for (var fname in fields) {
+            if (fields.hasOwnProperty(fname)) {
+              var fi = document.createElement('input');
+              fi.type = 'hidden'; fi.name = fname; fi.value = fields[fname];
+              fakeForm.appendChild(fi);
+            }
+          }
+          var mi = document.createElement('input');
+          mi.type = 'hidden'; mi.name = 'textarea'; mi.value = text;
+          fakeForm.appendChild(mi);
+          var si = document.createElement('input');
+          si.type = 'hidden'; si.name = 'submit_text'; si.value = 'Poslat';
+          fakeForm.appendChild(si);
+          document.body.appendChild(fakeForm);
+          fakeForm.submit();
+          hIframe.addEventListener('load', function () {
+            fakeForm.remove(); hIframe.remove();
+            setTimeout(pollFn, 500);
+          });
+          setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, 10000);
+        };
+        fwInput.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); doSend(); }
+        });
+        sendBtn.addEventListener('click', doSend);
+        footer.appendChild(fwInput);
+        footer.appendChild(sendBtn);
 
         // Fetch userpage for status icons (skip photos and smileys)
         if (userpageUrl) {
@@ -1177,6 +1266,7 @@
 
   function closeFloatingWhisper(key) {
     if (floatingWindows[key]) {
+      if (floatingWindows[key].pollTimer) clearInterval(floatingWindows[key].pollTimer);
       floatingWindows[key].el.remove();
       if (floatingWindows[key].head) floatingWindows[key].head.remove();
       delete floatingWindows[key];
@@ -2416,25 +2506,53 @@
       '}',
       '.xchat-fw-body {',
       '  flex: 1;',
-      '  position: relative;',
-      '  overflow: hidden;',
-      '}',
-      '.xchat-fw-body iframe {',
-      '  position: absolute;',
-      '  top: 0; left: 0;',
-      '  width: 100%;',
-      '  height: 100%;',
-      '  border: none;',
+      '  overflow-y: auto;',
+      '  font-size: 12px;',
+      '  line-height: 1.4;',
+      '  word-wrap: break-word;',
+      '  padding: 4px;',
       '}',
       '.xchat-fw-footer {',
       '  flex-shrink: 0;',
-      '  height: 32px;',
       '  border-top: 1px solid #ccc;',
+      '  display: flex;',
+      '  align-items: center;',
+      '  padding: 4px;',
+      '  gap: 4px;',
       '}',
-      '.xchat-fw-footer iframe {',
-      '  width: 100%;',
-      '  height: 100%;',
+      '.xchat-fw-input {',
+      '  flex: 1;',
+      '  border: 1px solid #ccc;',
+      '  border-radius: 12px;',
+      '  padding: 4px 10px;',
+      '  font-size: 12px;',
+      '  outline: none;',
+      '  min-width: 0;',
+      '}',
+      '.xchat-fw-input:focus {',
+      '  border-color: #8291A5;',
+      '}',
+      '.xchat-fw-send {',
+      '  background: #8291A5;',
+      '  color: #fff;',
       '  border: none;',
+      '  border-radius: 50%;',
+      '  width: 24px;',
+      '  height: 24px;',
+      '  cursor: pointer;',
+      '  font-size: 12px;',
+      '  line-height: 24px;',
+      '  text-align: center;',
+      '  flex-shrink: 0;',
+      '  padding: 0;',
+      '}',
+      '.xchat-fw-send:hover {',
+      '  background: #6b7d96;',
+      '}',
+      '.xchat-fw-body .splash {',
+      '  text-align: center;',
+      '  padding: 20px;',
+      '  color: #999;',
       '}',
 
     ].join('\n');
