@@ -1762,17 +1762,30 @@
       var doHighlight = highlightToggle.get() === 'yes';
       var myNick = '';
       if (doHighlight) {
-        try {
-          var bd = findBoardDoc();
-          if (bd) {
-            var el = bd.querySelector('.umsg_hmynicki');
-            if (el) myNick = el.textContent.trim();
-            if (!myNick) {
-              var mm = bd.querySelector('.umsg_roomi b');
-              if (mm) myNick = mm.textContent.trim().replace(/:$/, '');
+        myNick = getSetting('myNick', '');
+        if (!myNick) {
+          for (var ni = 0; ni < results.length; ni++) {
+            var mt = results[ni].message_type;
+            if ((mt === 'room_out' || mt === 'whisper_out' || mt === 'wcross_out') && results[ni].sender) {
+              myNick = results[ni].sender;
+              setSetting('myNick', myNick);
+              break;
             }
           }
-        } catch {}
+        }
+        if (!myNick) {
+          try {
+            var bd = findBoardDoc();
+            if (bd) {
+              var el = bd.querySelector('.umsg_hmynicki');
+              if (el) myNick = el.textContent.trim();
+              if (!myNick) {
+                var mm = bd.querySelector('.umsg_roomi b');
+                if (mm) myNick = mm.textContent.trim().replace(/:$/, '');
+              }
+            }
+          } catch {}
+        }
         if (!myNick && CONFIG.myNick) myNick = CONFIG.myNick;
       }
 
@@ -1880,6 +1893,9 @@
     markAllBadCommands();
     restoreHideBadCommands();
     captureAllDivs();
+
+    var detectedNick = getMyNick();
+    if (detectedNick) setSetting('myNick', detectedNick);
 
     const board = document.getElementById('board');
     if (!board) return;
