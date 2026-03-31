@@ -976,6 +976,32 @@
     return c;
   }
 
+  function getHeadsSidebar() {
+    var s = document.getElementById('xchat-fw-heads');
+    if (s) return s;
+    s = document.createElement('div');
+    s.id = 'xchat-fw-heads';
+    s.className = 'xchat-fw-heads';
+    document.body.appendChild(s);
+    return s;
+  }
+
+  function getMaxHeads() {
+    var sidebar = getHeadsSidebar();
+    var available = sidebar.clientHeight || window.innerHeight - 20;
+    return Math.floor(available / 52); // 40px head + 8px gap + 4px margin
+  }
+
+  function countMinimizedHeads() {
+    var count = 0;
+    for (var k in floatingWindows) {
+      if (floatingWindows.hasOwnProperty(k) && floatingWindows[k].el.classList.contains('xchat-fw-minimized')) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   function normNick(n) {
     return n.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
   }
@@ -1062,6 +1088,7 @@
     minBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       fw.classList.toggle('xchat-fw-minimized');
+      head.classList.toggle('xchat-fw-head-visible');
       saveFloatingState();
     });
     btnsDiv.appendChild(minBtn);
@@ -1095,6 +1122,7 @@
     header.appendChild(btnsDiv);
     header.addEventListener('click', function () {
       fw.classList.toggle('xchat-fw-minimized');
+      head.classList.toggle('xchat-fw-head-visible');
       saveFloatingState();
     });
     fw.appendChild(header);
@@ -1112,23 +1140,50 @@
     // ── Avatar head (shown when minimized) ──
     var head = document.createElement('div');
     head.className = 'xchat-fw-head';
-    head.title = nick;
+
     var headImg = document.createElement('img');
+    headImg.className = 'xchat-fw-head-img';
     headImg.src = 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
     headImg.alt = nick;
     head.appendChild(headImg);
+
+    // Close button on head
+    var headClose = document.createElement('span');
+    headClose.className = 'xchat-fw-head-close';
+    headClose.textContent = '\u00d7';
+    headClose.addEventListener('click', function (e) {
+      e.stopPropagation();
+      closeFloatingWhisper(key);
+    });
+    head.appendChild(headClose);
+
+    // Tooltip (shown on hover, to the left)
+    var headTip = document.createElement('div');
+    headTip.className = 'xchat-fw-head-tip';
+    var headTipIcons = document.createElement('span');
+    headTipIcons.className = 'xchat-fw-head-tip-icons';
+    headTip.appendChild(headTipIcons);
+    var headTipNick = document.createElement('span');
+    headTipNick.textContent = nick;
+    headTip.appendChild(headTipNick);
+    head.appendChild(headTip);
+
     head.addEventListener('click', function () {
       fw.classList.remove('xchat-fw-minimized');
+      head.classList.remove('xchat-fw-head-visible');
       saveFloatingState();
     });
 
-    if (startMinimized) fw.classList.add('xchat-fw-minimized');
+    if (startMinimized) {
+      fw.classList.add('xchat-fw-minimized');
+      head.classList.add('xchat-fw-head-visible');
+    }
 
     container.appendChild(fw);
-    container.appendChild(head);
+    getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
-    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick };
+    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons };
     saveFloatingState();
 
     // ── Fetch frameset to extract individual frame URLs ──
@@ -1278,6 +1333,12 @@
                 img.src = src;
                 img.border = '0';
                 iconsSpan.appendChild(img);
+                // Also add to head tooltip
+                if (floatingWindows[key] && floatingWindows[key].headTipIcons) {
+                  var tipImg = document.createElement('img');
+                  tipImg.src = src;
+                  floatingWindows[key].headTipIcons.appendChild(tipImg);
+                }
               }
             })
             .catch(function () { /* icons are optional */ });
@@ -2398,12 +2459,22 @@
       '.xchat-fw-container {',
       '  position: fixed;',
       '  bottom: 0;',
-      '  right: 10px;',
+      '  right: 60px;',
       '  display: flex;',
       '  flex-direction: row-reverse;',
       '  align-items: flex-end;',
       '  gap: 6px;',
       '  z-index: 99990;',
+      '  pointer-events: none;',
+      '}',
+      '.xchat-fw-heads {',
+      '  position: fixed;',
+      '  right: 10px;',
+      '  bottom: 10px;',
+      '  display: flex;',
+      '  flex-direction: column-reverse;',
+      '  gap: 8px;',
+      '  z-index: 99991;',
       '  pointer-events: none;',
       '}',
       '.xchat-fw {',
@@ -2428,46 +2499,78 @@
       '  width: 40px;',
       '  height: 40px;',
       '  border-radius: 50%;',
-      '  overflow: hidden;',
       '  cursor: pointer;',
       '  box-shadow: 0 2px 8px rgba(0,0,0,0.3);',
       '  border: 2px solid #fff;',
       '  display: none;',
       '  flex-shrink: 0;',
-      '  margin-bottom: 8px;',
+      '  position: relative;',
       '}',
-      '.xchat-fw-head img {',
+      '.xchat-fw-head-img {',
       '  width: 100%;',
       '  height: 100%;',
       '  object-fit: cover;',
       '  display: block;',
+      '  border-radius: 50%;',
       '}',
-      '.xchat-fw-minimized + .xchat-fw-head {',
+      '.xchat-fw-head-visible {',
       '  display: block;',
       '}',
       '.xchat-fw-head:hover {',
       '  box-shadow: 0 2px 12px rgba(0,0,0,0.5);',
       '}',
-      '.xchat-fw-head::after {',
-      '  content: attr(title);',
+      '.xchat-fw-head-close {',
       '  position: absolute;',
-      '  bottom: 100%;',
-      '  left: 50%;',
-      '  transform: translateX(-50%);',
-      '  background: rgba(0,0,0,0.75);',
+      '  top: -4px;',
+      '  right: -4px;',
+      '  width: 16px;',
+      '  height: 16px;',
+      '  line-height: 15px;',
+      '  text-align: center;',
+      '  background: rgba(0,0,0,0.65);',
       '  color: #fff;',
-      '  font-size: 11px;',
-      '  padding: 2px 6px;',
-      '  border-radius: 3px;',
+      '  font-size: 12px;',
+      '  border-radius: 50%;',
+      '  cursor: pointer;',
+      '  display: none;',
+      '  z-index: 2;',
+      '}',
+      '.xchat-fw-head:hover .xchat-fw-head-close {',
+      '  display: block;',
+      '}',
+      '.xchat-fw-head-close:hover {',
+      '  background: rgba(200,0,0,0.85);',
+      '}',
+      '.xchat-fw-head-tip {',
+      '  position: absolute;',
+      '  right: 100%;',
+      '  top: 50%;',
+      '  transform: translateY(-50%);',
+      '  margin-right: 8px;',
+      '  background: rgba(0,0,0,0.8);',
+      '  color: #fff;',
+      '  font-size: 12px;',
+      '  font-family: arial, sans-serif;',
+      '  font-weight: bold;',
+      '  padding: 4px 10px;',
+      '  border-radius: 6px;',
       '  white-space: nowrap;',
       '  display: none;',
+      '  align-items: center;',
+      '  gap: 4px;',
       '  pointer-events: none;',
+      '  box-shadow: 0 2px 8px rgba(0,0,0,0.3);',
       '}',
-      '.xchat-fw-head {',
-      '  position: relative;',
+      '.xchat-fw-head:hover .xchat-fw-head-tip {',
+      '  display: flex;',
       '}',
-      '.xchat-fw-head:hover::after {',
-      '  display: block;',
+      '.xchat-fw-head-tip-icons {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 2px;',
+      '}',
+      '.xchat-fw-head-tip-icons img {',
+      '  vertical-align: middle;',
       '}',
 
       '.xchat-fw-header {',
