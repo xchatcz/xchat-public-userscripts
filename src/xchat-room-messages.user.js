@@ -1406,7 +1406,8 @@
     if (!launcherHistoryList) return;
     var history = getWhisperHistory();
     launcherHistoryList.innerHTML = '';
-    for (var i = 0; i < history.length; i++) {
+    // Display oldest first so recently closed appear at the bottom
+    for (var i = history.length - 1; i >= 0; i--) {
       var li = document.createElement('li');
       li.className = 'xchat-fw-launcher-item';
       li.textContent = history[i].nick;
@@ -1419,11 +1420,13 @@
       })(history[i].nick));
       launcherHistoryList.appendChild(li);
     }
+    // Scroll to bottom to show most recent
+    launcherHistoryList.scrollTop = launcherHistoryList.scrollHeight;
   }
 
   function closeLauncherPopup() {
-    var popup = document.getElementById('xchat-fw-launcher-popup');
-    if (popup) popup.classList.remove('xchat-fw-launcher-popup-visible');
+    var win = document.getElementById('xchat-fw-launcher-win');
+    if (win) win.remove();
   }
 
   function createLauncherBubble() {
@@ -1438,93 +1441,104 @@
     // Chat icon SVG
     bubble.innerHTML = '<svg class="xchat-fw-launcher-icon" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
 
-    // Popup panel
-    var popup = document.createElement('div');
-    popup.className = 'xchat-fw-launcher-popup';
-    popup.id = 'xchat-fw-launcher-popup';
-
-    // Header
-    var popupHeader = document.createElement('div');
-    popupHeader.className = 'xchat-fw-launcher-popup-header';
-    popupHeader.textContent = 'Po\u0161eptat';
-
-    var closeBtn = document.createElement('span');
-    closeBtn.className = 'xchat-fw-launcher-popup-close';
-    closeBtn.textContent = '\u00d7';
-    closeBtn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      closeLauncherPopup();
-    });
-    popupHeader.appendChild(closeBtn);
-    popup.appendChild(popupHeader);
-
-    // Nick input row
-    var inputRow = document.createElement('div');
-    inputRow.className = 'xchat-fw-launcher-input-row';
-
-    var input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'xchat-fw-launcher-input';
-    input.placeholder = 'Nick...';
-    input.autocomplete = 'off';
-
-    var confirmBtn = document.createElement('button');
-    confirmBtn.className = 'xchat-fw-launcher-confirm';
-    confirmBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-
-    function submitNick() {
-      var val = input.value.trim();
-      if (!val) return;
-      openFloatingWhisper(val);
-      input.value = '';
-      closeLauncherPopup();
-    }
-
-    confirmBtn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      submitNick();
-    });
-    input.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        submitNick();
-      }
-    });
-
-    inputRow.appendChild(input);
-    inputRow.appendChild(confirmBtn);
-    popup.appendChild(inputRow);
-
-    // History list
-    var historyUl = document.createElement('ul');
-    historyUl.className = 'xchat-fw-launcher-list';
-    launcherHistoryList = historyUl;
-    popup.appendChild(historyUl);
-
-    // Populate initial history
-    refreshLauncherHistory();
-
-    bubble.appendChild(popup);
-
-    // Toggle popup on bubble click
-    bubble.addEventListener('click', function (e) {
-      if (e.target.closest('.xchat-fw-launcher-popup')) return;
-      var isOpen = popup.classList.contains('xchat-fw-launcher-popup-visible');
-      if (isOpen) {
+    bubble.addEventListener('click', function () {
+      // Toggle: if window exists, close it; otherwise open it
+      var existing = document.getElementById('xchat-fw-launcher-win');
+      if (existing) {
         closeLauncherPopup();
-      } else {
-        refreshLauncherHistory();
-        popup.classList.add('xchat-fw-launcher-popup-visible');
+        return;
+      }
+
+      var container = getFloatingContainer();
+
+      // Build a .xchat-fw style window
+      var fw = document.createElement('div');
+      fw.className = 'xchat-fw xchat-fw-launcher-win';
+      fw.id = 'xchat-fw-launcher-win';
+
+      // Header (same style as whisper windows)
+      var header = document.createElement('div');
+      header.className = 'xchat-fw-header';
+
+      var headerInfo = document.createElement('div');
+      headerInfo.className = 'xchat-fw-header-info';
+      var texts = document.createElement('div');
+      texts.className = 'xchat-fw-texts';
+      var nickEl = document.createElement('div');
+      nickEl.className = 'xchat-fw-nick';
+      nickEl.textContent = 'Po\u0161eptat';
+      texts.appendChild(nickEl);
+      headerInfo.appendChild(texts);
+      header.appendChild(headerInfo);
+
+      var btns = document.createElement('div');
+      btns.className = 'xchat-fw-header-btns';
+      var closeBtn = document.createElement('button');
+      closeBtn.className = 'xchat-fw-header-btn';
+      closeBtn.innerHTML = '&times;';
+      closeBtn.title = 'Zav\u0159\u00edt';
+      closeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeLauncherPopup();
+      });
+      btns.appendChild(closeBtn);
+      header.appendChild(btns);
+      fw.appendChild(header);
+
+      // Body
+      var body = document.createElement('div');
+      body.className = 'xchat-fw-launcher-body';
+
+      // Nick input row
+      var inputRow = document.createElement('div');
+      inputRow.className = 'xchat-fw-launcher-input-row';
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'xchat-fw-launcher-input';
+      input.placeholder = 'Nick...';
+      input.autocomplete = 'off';
+
+      var confirmBtn = document.createElement('button');
+      confirmBtn.className = 'xchat-fw-launcher-confirm';
+      confirmBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+      function submitNick() {
+        var val = input.value.trim();
+        if (!val) return;
+        openFloatingWhisper(val);
         input.value = '';
-        setTimeout(function () { input.focus(); }, 50);
-      }
-    });
-
-    // Close popup on outside click
-    document.addEventListener('click', function (e) {
-      if (!e.target.closest('#xchat-fw-launcher')) {
         closeLauncherPopup();
       }
+
+      confirmBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        submitNick();
+      });
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          submitNick();
+        }
+      });
+
+      inputRow.appendChild(input);
+      inputRow.appendChild(confirmBtn);
+      body.appendChild(inputRow);
+
+      // History list
+      var historyUl = document.createElement('ul');
+      historyUl.className = 'xchat-fw-launcher-list';
+      launcherHistoryList = historyUl;
+      body.appendChild(historyUl);
+
+      fw.appendChild(body);
+      container.appendChild(fw);
+
+      // Populate history
+      refreshLauncherHistory();
+
+      setTimeout(function () { input.focus(); }, 50);
     });
 
     // Insert as first child so it's at the bottom (column-reverse)
@@ -2651,7 +2665,7 @@
       '}',
       '.xchat-fw {',
       '  pointer-events: auto;',
-      '  width: 320px;',
+      '  width: 300px;',
       '  height: 400px;',
       '  background: #fff;',
       '  border: 1px solid #999;',
@@ -2869,7 +2883,7 @@
       '  overflow: hidden;',
       '}',
 
-      // Pošeptat launcher bubble
+      // Pošeptat launcher bubble + window
       '.xchat-fw-launcher-head {',
       '  background: #8291A5;',
       '  display: flex;',
@@ -2881,42 +2895,14 @@
       '  height: 22px;',
       '  pointer-events: none;',
       '}',
-      '.xchat-fw-launcher-popup {',
-      '  display: none;',
-      '  position: absolute;',
-      '  right: 0;',
-      '  bottom: 48px;',
-      '  width: 220px;',
-      '  background: #fff;',
-      '  border: 1px solid #999;',
-      '  border-radius: 8px;',
-      '  box-shadow: 0 -2px 12px rgba(0,0,0,0.25);',
-      '  font-family: arial, sans-serif;',
-      '  overflow: hidden;',
-      '  z-index: 99995;',
+      '.xchat-fw-launcher-win {',
+      '  height: 280px;',
       '}',
-      '.xchat-fw-launcher-popup-visible {',
-      '  display: block;',
-      '}',
-      '.xchat-fw-launcher-popup-header {',
-      '  background: #8291A5;',
-      '  color: #fff;',
-      '  font-size: 13px;',
-      '  font-weight: bold;',
-      '  padding: 6px 8px;',
+      '.xchat-fw-launcher-body {',
+      '  flex: 1;',
       '  display: flex;',
-      '  align-items: center;',
-      '  justify-content: space-between;',
-      '  user-select: none;',
-      '}',
-      '.xchat-fw-launcher-popup-close {',
-      '  cursor: pointer;',
-      '  font-size: 16px;',
-      '  line-height: 1;',
-      '  opacity: 0.8;',
-      '}',
-      '.xchat-fw-launcher-popup-close:hover {',
-      '  opacity: 1;',
+      '  flex-direction: column;',
+      '  overflow: hidden;',
       '}',
       '.xchat-fw-launcher-input-row {',
       '  display: flex;',
@@ -2924,6 +2910,7 @@
       '  padding: 6px;',
       '  gap: 4px;',
       '  border-bottom: 1px solid #eee;',
+      '  flex-shrink: 0;',
       '}',
       '.xchat-fw-launcher-input {',
       '  flex: 1;',
@@ -2957,7 +2944,7 @@
       '  list-style: none;',
       '  margin: 0;',
       '  padding: 0;',
-      '  max-height: 200px;',
+      '  flex: 1;',
       '  overflow-y: auto;',
       '}',
       '.xchat-fw-launcher-item {',
