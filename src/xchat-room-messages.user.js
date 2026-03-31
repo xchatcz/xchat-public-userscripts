@@ -19,6 +19,16 @@
   const ENTRY_RE = /(?:Uživatel(?:ka)?)\s+(\S+)\s+vstoupil[a]?\s+do\s+místnosti/;
   const STORAGE_KEY = 'xchat_greetings';
   const FILTER_STYLE_ID = 'xchat-board-filter';
+  const HIGHLIGHT_STYLE_ID = 'xchat-board-highlight';
+
+  var HIGHLIGHT_CSS = [
+    '.umsg_room .umsg_hmynick',
+    '.umsg_roomi .umsg_hmynick',
+    '.umsg_whisper .umsg_hmynick',
+    '.umsg_whisperi .umsg_hmynick',
+    '.umsg_wcross .umsg_hmynick',
+    '.umsg_wcrossi .umsg_hmynick'
+  ].join(', ') + ' { background: yellow !important; }';
 
   function getOpParam() {
     return new URLSearchParams(location.search).get('op') || '';
@@ -464,6 +474,28 @@
     } catch {}
   }
 
+  function applyHighlight(on) {
+    try { window.top._xchatBoardHighlight = on; } catch {}
+    var startDoc = findBoardDoc();
+    if (!startDoc) return;
+    var existing = startDoc.getElementById(HIGHLIGHT_STYLE_ID);
+    if (!on) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
+    var style = startDoc.createElement('style');
+    style.id = HIGHLIGHT_STYLE_ID;
+    style.textContent = HIGHLIGHT_CSS;
+    startDoc.head.appendChild(style);
+  }
+
+  function restoreHighlight() {
+    try {
+      if (window.top._xchatBoardHighlight) applyHighlight(true);
+    } catch {}
+  }
+
   // ── Infopage: filter links ──
 
   function initInfopage() {
@@ -518,6 +550,47 @@
 
     renderFilterLinks();
     historieLink.parentNode.insertBefore(container, historieLink.nextSibling);
+
+    // ── Highlight toggle ──
+
+    var highlightOn;
+    try { highlightOn = !!window.top._xchatBoardHighlight; } catch { highlightOn = false; }
+
+    var hlContainer = document.createElement('span');
+    hlContainer.id = 'xchat-highlight-links';
+    hlContainer.appendChild(document.createTextNode(' \u2013 Zv\u00fdraznit: '));
+
+    function renderHighlightLinks() {
+      while (hlContainer.childNodes.length > 1) hlContainer.removeChild(hlContainer.lastChild);
+      var options = [
+        { on: true, label: 'Ano' },
+        { on: false, label: 'Ne' }
+      ];
+      for (var i = 0; i < options.length; i++) {
+        if (i > 0) hlContainer.appendChild(document.createTextNode(' | '));
+        var opt = options[i];
+        if (opt.on === highlightOn) {
+          var b = document.createElement('b');
+          b.textContent = opt.label;
+          hlContainer.appendChild(b);
+        } else {
+          var a = document.createElement('a');
+          a.href = '#';
+          a.textContent = opt.label;
+          a.dataset.hlOn = opt.on ? '1' : '0';
+          a.addEventListener('click', function (e) {
+            e.preventDefault();
+            highlightOn = this.dataset.hlOn === '1';
+            applyHighlight(highlightOn);
+            renderHighlightLinks();
+          });
+          hlContainer.appendChild(a);
+        }
+      }
+    }
+
+    renderHighlightLinks();
+    container.parentNode.insertBefore(hlContainer, container.nextSibling);
   }
 
   // ── Startframe: greet buttons + board ──
@@ -526,6 +599,7 @@
     injectStyles();
     processAll();
     restoreBoardFilter();
+    restoreHighlight();
 
     const board = document.getElementById('board');
     if (!board) return;
