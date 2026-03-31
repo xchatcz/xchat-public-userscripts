@@ -897,6 +897,43 @@
     renderGreetingRows();
     modal.appendChild(greetingsContainer);
 
+    // Add new greeting row
+    var addRow = targetDoc.createElement('div');
+    addRow.className = 'xchat-settings-row';
+    addRow.style.cssText = 'margin-top: 6px;';
+
+    var addNickInp = targetDoc.createElement('input');
+    addNickInp.type = 'text';
+    addNickInp.placeholder = 'Nick';
+    addNickInp.style.cssText = 'width: 80px; padding: 2px 4px; font-size: 11px;';
+    addRow.appendChild(addNickInp);
+
+    var addGreetInp = targetDoc.createElement('input');
+    addGreetInp.type = 'text';
+    addGreetInp.placeholder = 'Pozdrav (nap\u0159. Ahoj *22*)';
+    addGreetInp.style.cssText = 'width: 180px; padding: 2px 4px; font-size: 11px; margin-left: 4px;';
+    addGreetInp.maxLength = 200;
+    addRow.appendChild(addGreetInp);
+
+    var addBtn = targetDoc.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '+';
+    addBtn.title = 'P\u0159idat pozdrav';
+    addBtn.style.cssText = 'margin-left: 4px; font-size: 11px; cursor: pointer; padding: 1px 6px;';
+    addBtn.addEventListener('click', function () {
+      var nick = addNickInp.value.trim();
+      var greet = addGreetInp.value.trim();
+      if (!nick) { addNickInp.focus(); return; }
+      if (!greet) { addGreetInp.focus(); return; }
+      allGreetings[nick] = greet;
+      renderGreetingRows();
+      addNickInp.value = '';
+      addGreetInp.value = '';
+      addNickInp.focus();
+    });
+    addRow.appendChild(addBtn);
+    modal.appendChild(addRow);
+
     var deleteAllBtn = targetDoc.createElement('button');
     deleteAllBtn.type = 'button';
     deleteAllBtn.textContent = 'Smazat v\u0161echny pozdravy';
