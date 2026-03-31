@@ -1130,29 +1130,16 @@
         if (textpageUrl && !/^https?:/.test(textpageUrl)) textpageUrl = base + textpageUrl.replace(/^\//, '');
         if (userpageUrl && !/^https?:/.test(userpageUrl)) userpageUrl = base + userpageUrl.replace(/^\//, '');
 
-        // ── Board polling via AJAX (no iframe) ──
-        var boardUrl = '';
+        // ── Load startframe in iframe (without js=1 → uses board+Ajax internally) ──
         if (startframeUrl) {
-          boardUrl = startframeUrl
-            .replace(/op=startframe/, 'op=board')
-            .replace(/[&?]js=\d+/, '');
-        }
-        var pollFn = function () {
-          if (!boardUrl || !floatingWindows[key]) return;
-          fetch(boardUrl, { credentials: 'include' })
-            .then(function (r2) { return r2.text(); })
-            .then(function (boardHtml) {
-              if (!floatingWindows[key]) return;
-              var atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 10;
-              body.innerHTML = boardHtml;
-              if (atBottom) body.scrollTop = body.scrollHeight;
-            })
-            .catch(function () {});
-        };
-        if (boardUrl) {
-          body.textContent = 'Nahr\u00e1v\u00e1m\u2026';
-          pollFn();
-          floatingWindows[key].pollTimer = setInterval(pollFn, 4000);
+          var sfUrl = startframeUrl.replace(/[&?]js=\d+/g, '');
+          var sfIframe = document.createElement('iframe');
+          sfIframe.className = 'xchat-fw-iframe';
+          sfIframe.src = sfUrl;
+          sfIframe.frameBorder = '0';
+          body.innerHTML = '';
+          body.appendChild(sfIframe);
+          floatingWindows[key].sfIframe = sfIframe;
         }
 
         // ── Fetch textpage form data for sending ──
@@ -1223,7 +1210,20 @@
           fakeForm.submit();
           hIframe.addEventListener('load', function () {
             fakeForm.remove(); hIframe.remove();
-            setTimeout(pollFn, 500);
+            // Try to refresh the startframe's board after sending
+            var fwd = floatingWindows[key];
+            if (fwd && fwd.sfIframe) {
+              setTimeout(function () {
+                try {
+                  var sfWin = fwd.sfIframe.contentWindow;
+                  if (sfWin && sfWin.dataframe && sfWin.dataframe.refresh) {
+                    sfWin.dataframe.refresh();
+                  } else if (sfWin) {
+                    sfWin.location.reload();
+                  }
+                } catch {}
+              }, 500);
+            }
           });
           setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, 10000);
         };
@@ -1266,7 +1266,9 @@
 
   function closeFloatingWhisper(key) {
     if (floatingWindows[key]) {
-      if (floatingWindows[key].pollTimer) clearInterval(floatingWindows[key].pollTimer);
+      if (floatingWindows[key].sfIframe) {
+        try { floatingWindows[key].sfIframe.src = 'about:blank'; } catch (e) {}
+      }
       floatingWindows[key].el.remove();
       if (floatingWindows[key].head) floatingWindows[key].head.remove();
       delete floatingWindows[key];
@@ -2511,6 +2513,7 @@
       '  line-height: 1.4;',
       '  word-wrap: break-word;',
       '  padding: 4px;',
+      '  background: #CCCCCD;',
       '}',
       '.xchat-fw-footer {',
       '  flex-shrink: 0;',
@@ -2553,6 +2556,16 @@
       '  text-align: center;',
       '  padding: 20px;',
       '  color: #999;',
+      '}',
+      '.xchat-fw-body iframe.xchat-fw-iframe {',
+      '  width: 100%;',
+      '  height: 100%;',
+      '  border: none;',
+      '  display: block;',
+      '}',
+      '.xchat-fw-body:has(.xchat-fw-iframe) {',
+      '  padding: 0;',
+      '  overflow: hidden;',
       '}',
 
     ].join('\n');
