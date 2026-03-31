@@ -474,8 +474,12 @@
     } catch {}
   }
 
+  function isHighlightOn() {
+    try { return localStorage.getItem('xchat_highlight') === '1'; } catch { return false; }
+  }
+
   function applyHighlight(on) {
-    try { window.top._xchatBoardHighlight = on; } catch {}
+    try { localStorage.setItem('xchat_highlight', on ? '1' : '0'); } catch {}
     var startDoc = findBoardDoc();
     if (!startDoc) return;
     var existing = startDoc.getElementById(HIGHLIGHT_STYLE_ID);
@@ -491,9 +495,7 @@
   }
 
   function restoreHighlight() {
-    try {
-      if (window.top._xchatBoardHighlight) applyHighlight(true);
-    } catch {}
+    if (isHighlightOn()) applyHighlight(true);
   }
 
   // ── Infopage: filter links ──
@@ -553,8 +555,7 @@
 
     // ── Highlight toggle ──
 
-    var highlightOn;
-    try { highlightOn = !!window.top._xchatBoardHighlight; } catch { highlightOn = false; }
+    var highlightOn = isHighlightOn();
 
     var hlContainer = document.createElement('span');
     hlContainer.id = 'xchat-highlight-links';
