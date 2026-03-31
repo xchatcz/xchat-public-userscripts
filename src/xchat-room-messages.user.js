@@ -239,7 +239,7 @@
   }
 
   function isHistoryEnabled() {
-    return getSetting('historyEnabled', false);
+    return getSetting('historyEnabled', true);
   }
 
   // ── Message parsing ──
@@ -259,8 +259,14 @@
   }
 
   function parseBoardDiv(div) {
+    var timeStr = '';
     var timeEl = div.querySelector('.systemtime');
-    var timeStr = timeEl ? timeEl.textContent.trim() : '';
+    if (timeEl) {
+      timeStr = timeEl.textContent.trim();
+    } else {
+      var tm = div.textContent.match(/(\d{1,2}:\d{2}:\d{2})/);
+      if (tm) timeStr = tm[1];
+    }
 
     var now = new Date();
     var parts = timeStr.split(':');
