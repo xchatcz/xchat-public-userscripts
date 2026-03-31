@@ -23,6 +23,18 @@
     return 'https://x.ximg.cz/images/x4/sm/' + bucket + '/' + id + '.gif';
   }
 
+  function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function numToEmoji(text) {
+    return escapeHtml(text).replace(/\*(\d+)\*/g, function (match, num) {
+      var id = parseInt(num, 10);
+      var bucket = id % 100;
+      return '<img class="xchat-emoji" src="https://x.ximg.cz/images/x4/sm/' + bucket + '/' + id + '.gif" alt="*' + id + '*" title="*' + id + '*">';
+    });
+  }
+
   function getGreetings() {
     try {
       return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
@@ -98,7 +110,7 @@
       '  box-sizing: border-box;',
       '}',
       '.xchat-greet-btn:hover { background: #ddd; }',
-      '.xchat-greet-btn img { vertical-align: middle; height: 12px; }',
+      '.xchat-greet-btn img { vertical-align: middle; height: 12px; margin: 0 1px; }',
       '.xchat-greet-settings {',
       '  margin-left: 6px;',
       '  border-color: #aaa;',
@@ -188,7 +200,7 @@
     btn.dataset.xchatGreetCustom = prefix;
     btn.dataset.xchatGreetNick = nick;
     if (greeting) {
-      btn.textContent = greeting;
+      btn.innerHTML = numToEmoji(greeting);
       btn.title = 'Vlastní: ' + greeting;
     } else {
       btn.textContent = '\u2026';
@@ -209,7 +221,7 @@
     for (var i = 0; i < btns.length; i++) {
       var btn = btns[i];
       if (greeting) {
-        btn.textContent = greeting;
+        btn.innerHTML = numToEmoji(greeting);
         btn.title = 'Vlastní: ' + greeting;
         btn.classList.remove('xchat-greet-custom-empty');
       } else {
@@ -318,7 +330,7 @@
     wrapper.appendChild(buildButtonGroup(nick, 'Sklo', nick + ': '));
     wrapper.appendChild(document.createTextNode(' '));
     wrapper.appendChild(buildButtonGroup(nick, 'Šeptem', '/m ' + nick + ' '));
-    wrapper.appendChild(document.createTextNode(' '));
+    wrapper.appendChild(document.createTextNode(' \u2013 '));
     var settingsBtn = createGreetButton('\u2699', 'Nastavit vlastní pozdrav pro ' + nick, function () {
       showGreetingModal(nick);
     });
