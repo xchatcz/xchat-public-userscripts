@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         XChat sklo
+// @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
 // @version      1.1.0
 // @description  Práci se sklem a zprávami na něm
@@ -389,6 +389,13 @@
     input.select();
   }
 
+  function getMyNick() {
+    var board = document.getElementById('board');
+    if (!board) return null;
+    var el = board.querySelector('.umsg_hmynicki');
+    return el ? el.textContent.trim() : null;
+  }
+
   function removeGreetButtons(nick) {
     var wrappers = document.querySelectorAll('[data-xchat-greet-wrapper="' + nick + '"]');
     for (var i = 0; i < wrappers.length; i++) wrappers[i].remove();
@@ -469,6 +476,9 @@
     if (!m) return;
 
     const nick = m[1];
+
+    var myNick = getMyNick();
+    if (myNick && nick === myNick) return;
 
     if (hasMessagesForNick(nick)) return;
 
