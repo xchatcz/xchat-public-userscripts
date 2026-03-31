@@ -527,6 +527,15 @@
   // ── Infopage: filter links ──
 
   function initInfopage() {
+    // Rename "Nemluvil jsi:" to "IDLE:"
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    var node;
+    while ((node = walker.nextNode())) {
+      if (node.textContent.indexOf('Nemluvil jsi:') !== -1) {
+        node.textContent = node.textContent.replace('Nemluvil jsi:', 'IDLE:');
+      }
+    }
+
     var links = document.querySelectorAll('a');
     var historieLink = null;
     for (var i = 0; i < links.length; i++) {
