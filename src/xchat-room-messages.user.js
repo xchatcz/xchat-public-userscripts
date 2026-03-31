@@ -128,7 +128,7 @@
   // ── IndexedDB ──
 
   var DB_NAME = 'xchat_room_messages';
-  var DB_VERSION = 1;
+  var DB_VERSION = 2;
   var STORE_NAME = 'messages';
 
   function openDB() {
@@ -136,8 +136,9 @@
       var req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = function (e) {
         var db = e.target.result;
+        var store;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
-          var store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+          store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
           store.createIndex('room_id', 'room_id', { unique: false });
           store.createIndex('timestamp', 'timestamp', { unique: false });
           store.createIndex('message_type', 'message_type', { unique: false });
@@ -145,6 +146,11 @@
           store.createIndex('recipient', 'recipient', { unique: false });
           store.createIndex('is_whisper', 'is_whisper', { unique: false });
           store.createIndex('room_timestamp', ['room_id', 'timestamp'], { unique: false });
+        } else {
+          store = e.target.transaction.objectStore(STORE_NAME);
+        }
+        if (!store.indexNames.contains('fingerprint')) {
+          store.createIndex('fingerprint', 'fingerprint', { unique: true });
         }
       };
       req.onsuccess = function (e) { resolve(e.target.result); };
@@ -159,7 +165,14 @@
         var store = tx.objectStore(STORE_NAME);
         var req = store.add(record);
         req.onsuccess = function () { resolve(req.result); };
-        req.onerror = function () { reject(req.error); };
+        req.onerror = function (e) {
+          if (req.error && req.error.name === 'ConstraintError') {
+            e.preventDefault();
+            resolve(null);
+          } else {
+            reject(req.error);
+          }
+        };
       });
     });
   }
@@ -245,16 +258,9 @@
   // ── Message parsing ──
 
   function getRoomId() {
-    try {
-      var path = window.top.location.pathname;
-      var m = path.match(/\/([^/]+)\/modchat/);
-      if (m) return m[1];
-    } catch {}
-    try {
-      var p2 = location.pathname;
-      var m2 = p2.match(/\/([^/]+)\/modchat/);
-      if (m2) return m2[1];
-    } catch {}
+    try { if (window.top._xchatRoomId) return String(window.top._xchatRoomId); } catch {}
+    var stored = getSetting('currentRoomId', '');
+    if (stored) return String(stored);
     return 'unknown';
   }
 
@@ -361,8 +367,6 @@
     };
   }
 
-  var _capturedFingerprints = {};
-
   function msgFingerprint(rec) {
     return rec.room_id + '|' + rec.timestamp.getTime() + '|' + rec.sender + '|' + rec.recipient + '|' + rec.content_text;
   }
@@ -373,9 +377,7 @@
     if (!isHistoryEnabled()) return;
     var rec = parseBoardDiv(div);
     if (!rec) return;
-    var fp = msgFingerprint(rec);
-    if (_capturedFingerprints[fp]) return;
-    _capturedFingerprints[fp] = true;
+    rec.fingerprint = msgFingerprint(rec);
     dbAdd(rec).catch(function (err) { /* silent */ });
   }
 
@@ -941,6 +943,25 @@
   // ── Infopage: filter links ──
 
   function initInfopage() {
+    // ── Extract numeric RID and room name from infopage ──
+    var roomLinks = document.querySelectorAll('a[href*="roominfo"]');
+    for (var ri = 0; ri < roomLinks.length; ri++) {
+      var href = roomLinks[ri].getAttribute('href') || '';
+      var ridMatch = href.match(/roominfo\((\d+)\)/);
+      if (ridMatch) {
+        var rid = ridMatch[1];
+        var roomName = roomLinks[ri].textContent.trim();
+        try { window.top._xchatRoomId = rid; } catch {}
+        setSetting('currentRoomId', rid);
+        var rooms = getSetting('rooms', {});
+        if (roomName && rooms[rid] !== roomName) {
+          rooms[rid] = roomName;
+          setSetting('rooms', rooms);
+        }
+        break;
+      }
+    }
+
     // Rename "Nemluvil jsi:" to "IDLE:"
     var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
     var node;
@@ -1442,16 +1463,9 @@
   // ── History page ──
 
   function getHistoryRoomId() {
-    try {
-      var path = window.top.location.pathname;
-      var m = path.match(/\/([^/]+)\/modchat/);
-      if (m) return m[1];
-    } catch {}
-    try {
-      var p = location.pathname;
-      var m2 = p.match(/\/([^/]+)\/history\.html/);
-      if (m2) return m2[1];
-    } catch {}
+    try { if (window.top._xchatRoomId) return String(window.top._xchatRoomId); } catch {}
+    var stored = getSetting('currentRoomId', '');
+    if (stored) return String(stored);
     return '';
   }
 
@@ -1500,6 +1514,7 @@
 
   function initHistoryPage() {
     var defaultRoom = getHistoryRoomId();
+    var knownRooms = getSetting('rooms', {});
 
     document.title = 'Historie zpr\u00e1v';
     document.body.innerHTML = '';
@@ -1508,28 +1523,25 @@
     var style = document.createElement('style');
     style.textContent = [
       '* { box-sizing: border-box; }',
-      '.hist-toolbar { background: #e8e8e8; border-bottom: 1px solid #ccc; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }',
-      '.hist-toolbar label { font-size: 11px; font-weight: bold; white-space: nowrap; }',
-      '.hist-toolbar input, .hist-toolbar select { font-size: 11px; padding: 2px 4px; border: 1px solid #aaa; border-radius: 3px; }',
-      '.hist-toolbar input[type="text"] { width: 100px; }',
-      '.hist-toolbar input[type="datetime-local"] { width: 160px; }',
-      '.hist-toolbar button { font-size: 11px; padding: 3px 10px; cursor: pointer; border: 1px solid #888; border-radius: 3px; background: #ddd; }',
-      '.hist-toolbar button:hover { background: #ccc; }',
-      '.hist-toolbar .hist-toggle { display: inline-flex; gap: 2px; }',
-      '.hist-toolbar .hist-toggle span { font-size: 11px; padding: 2px 6px; border: 1px solid #aaa; cursor: pointer; background: #fff; border-radius: 3px; }',
-      '.hist-toolbar .hist-toggle span.active { background: #4a90d9; color: #fff; border-color: #3a70b0; font-weight: bold; }',
-      '.hist-actions { background: #e8e8e8; border-bottom: 1px solid #ccc; padding: 6px 12px; display: flex; gap: 6px; align-items: center; }',
-      '.hist-actions button { font-size: 11px; padding: 3px 10px; cursor: pointer; border-radius: 3px; border: 1px solid #888; }',
-      '.hist-actions .btn-export { background: #4a90d9; color: #fff; border-color: #3a70b0; }',
-      '.hist-actions .btn-export:hover { background: #3a7bc8; }',
-      '.hist-actions .btn-delete { background: #c00; color: #fff; border-color: #900; }',
-      '.hist-actions .btn-delete:hover { background: #a00; }',
-      '.hist-actions .hist-status { font-size: 11px; color: #666; margin-left: auto; }',
-      '.hist-results { padding: 8px 12px; }',
-      '.hist-msg { padding: 2px 0; line-height: 1.5; }',
-      '.hist-msg .ht { color: #888; font-size: 11px; }',
+      'html, body { height: 100%; }',
+      'body { display: flex; flex-direction: column; }',
+      '.hist-toolbar { background: #e8e8e8; border-bottom: 1px solid #ccc; padding: 6px 12px; }',
+      '.hist-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0; }',
+      '.hist-row label { font-size: 11px; font-weight: bold; white-space: nowrap; }',
+      '.hist-row input, .hist-row select { font-size: 11px; padding: 2px 4px; border: 1px solid #aaa; border-radius: 3px; }',
+      '.hist-row input[type="text"] { width: 100px; }',
+      '.hist-row input[type="datetime-local"] { width: 160px; }',
+      '.hist-row button { font-size: 11px; padding: 3px 10px; cursor: pointer; border: 1px solid #888; border-radius: 3px; background: #ddd; }',
+      '.hist-row button:hover { background: #ccc; }',
+      '.hist-toggle { display: inline-flex; gap: 2px; }',
+      '.hist-toggle span { font-size: 11px; padding: 2px 6px; border: 1px solid #aaa; cursor: pointer; background: #fff; border-radius: 3px; user-select: none; }',
+      '.hist-toggle span.active { background: #4a90d9; color: #fff; border-color: #3a70b0; font-weight: bold; }',
+      '.hist-results { flex: 1; overflow-y: auto; padding: 6px 12px; }',
+      '.hist-msg { padding: 1px 0; line-height: 1.3; font-size: 12px; }',
+      '.hist-msg.hist-msg-system { font-size: 10px; color: #888; }',
+      '.hist-msg .ht { color: #888; font-size: inherit; }',
       '.hist-msg .hs { font-weight: bold; }',
-      '.hist-msg .hs-system { color: #666; }',
+      '.hist-msg .hs-system { color: #666; font-weight: normal; }',
       '.hist-msg .hs-whisper { color: #906; }',
       '.hist-msg .hs-room { color: #006; }',
       '.hist-msg .hs-advert { color: #999; }',
@@ -1537,25 +1549,37 @@
       '.hist-msg .highlight { background: yellow; }',
       '.hist-msg img.smiley { height: 15px; vertical-align: middle; }',
       '.hist-empty { padding: 20px; text-align: center; color: #999; font-style: italic; }',
+      '.hist-actions { background: #e0e0e0; border-top: 1px solid #bbb; padding: 6px 12px; display: flex; gap: 6px; align-items: center; flex-shrink: 0; }',
+      '.hist-actions button { font-size: 11px; padding: 3px 10px; cursor: pointer; border-radius: 3px; border: 1px solid #888; }',
+      '.hist-actions .btn-export { background: #4a90d9; color: #fff; border-color: #3a70b0; }',
+      '.hist-actions .btn-export:hover { background: #3a7bc8; }',
+      '.hist-actions .btn-delete { background: #c00; color: #fff; border-color: #900; }',
+      '.hist-actions .btn-delete:hover { background: #a00; }',
+      '.hist-actions .hist-status { font-size: 11px; color: #666; margin-left: auto; }',
     ].join('\n');
     document.head.appendChild(style);
 
-    // ── Toolbar ──
+    // ── Toolbar (2 rows) ──
     var toolbar = document.createElement('div');
     toolbar.className = 'hist-toolbar';
 
-    function makeField(labelText, el) {
+    var row1 = document.createElement('div');
+    row1.className = 'hist-row';
+    var row2 = document.createElement('div');
+    row2.className = 'hist-row';
+
+    function makeField(row, labelText, el) {
       var lbl = document.createElement('label');
       lbl.textContent = labelText;
-      toolbar.appendChild(lbl);
-      toolbar.appendChild(el);
+      row.appendChild(lbl);
+      row.appendChild(el);
       return el;
     }
 
-    function makeToggle(labelText, options, defaultVal) {
+    function makeToggle(row, labelText, options, defaultVal) {
       var lbl = document.createElement('label');
       lbl.textContent = labelText;
-      toolbar.appendChild(lbl);
+      row.appendChild(lbl);
       var wrap = document.createElement('span');
       wrap.className = 'hist-toggle';
       var currentVal = defaultVal;
@@ -1572,25 +1596,25 @@
         spans.push(sp);
         wrap.appendChild(sp);
       }
-      toolbar.appendChild(wrap);
+      row.appendChild(wrap);
       return { get: function () { return currentVal; } };
     }
 
+    // ── Row 1: Odesílatel, Příjemce, Zpráva, Typ, Místnost ──
     var inpSender = document.createElement('input');
     inpSender.type = 'text';
     inpSender.placeholder = 'v\u0161e';
-    makeField('Odes\u00edlatel:', inpSender);
+    makeField(row1, 'Odes\u00edlatel:', inpSender);
 
     var inpRecipient = document.createElement('input');
     inpRecipient.type = 'text';
     inpRecipient.placeholder = 'v\u0161e';
-    makeField('P\u0159\u00edjemce:', inpRecipient);
+    makeField(row1, 'P\u0159\u00edjemce:', inpRecipient);
 
-    var whisperToggle = makeToggle('\u0160ept\u00e1n\u00ed:', [
-      { label: 'V\u0161e', value: '' },
-      { label: 'Ano', value: 'yes' },
-      { label: 'Ne', value: 'no' }
-    ], '');
+    var inpContent = document.createElement('input');
+    inpContent.type = 'text';
+    inpContent.placeholder = 'hledat...';
+    makeField(row1, 'Zpr\u00e1va:', inpContent);
 
     var selType = document.createElement('select');
     var types = ['', 'room', 'room_out', 'whisper', 'whisper_out', 'system', 'advert'];
@@ -1601,33 +1625,60 @@
       o.textContent = typeLabels[t];
       selType.appendChild(o);
     }
-    makeField('Typ:', selType);
+    makeField(row1, 'Typ:', selType);
 
-    var inpContent = document.createElement('input');
-    inpContent.type = 'text';
-    inpContent.placeholder = 'hledat...';
-    makeField('Zpr\u00e1va:', inpContent);
+    // Room: select + text field
+    var roomLbl = document.createElement('label');
+    roomLbl.textContent = 'M\u00edstnost:';
+    row1.appendChild(roomLbl);
 
-    var inpFrom = document.createElement('input');
-    inpFrom.type = 'datetime-local';
-    makeField('Od:', inpFrom);
-
-    var inpTo = document.createElement('input');
-    inpTo.type = 'datetime-local';
-    makeField('Do:', inpTo);
+    var selRoom = document.createElement('select');
+    selRoom.style.cssText = 'font-size: 11px; margin-right: 2px;';
+    var roomIds = Object.keys(knownRooms).sort();
+    var defaultOptRoom = document.createElement('option');
+    defaultOptRoom.value = '';
+    defaultOptRoom.textContent = '-- vybrat --';
+    selRoom.appendChild(defaultOptRoom);
+    for (var ri = 0; ri < roomIds.length; ri++) {
+      var rOpt = document.createElement('option');
+      rOpt.value = roomIds[ri];
+      rOpt.textContent = knownRooms[roomIds[ri]] + ' (' + roomIds[ri] + ')';
+      if (roomIds[ri] === defaultRoom) rOpt.selected = true;
+      selRoom.appendChild(rOpt);
+    }
+    row1.appendChild(selRoom);
 
     var inpRoom = document.createElement('input');
     inpRoom.type = 'text';
     inpRoom.value = defaultRoom;
     inpRoom.style.width = '80px';
-    makeField('M\u00edstnost:', inpRoom);
+    row1.appendChild(inpRoom);
 
-    var highlightToggle = makeToggle('Zv\u00fdraznit nick:', [
+    selRoom.addEventListener('change', function () {
+      if (selRoom.value) inpRoom.value = selRoom.value;
+    });
+
+    // ── Row 2: Od, Do, Šeptání, Zvýraznit nick, Zobrazit datum, Hledat ──
+    var inpFrom = document.createElement('input');
+    inpFrom.type = 'datetime-local';
+    makeField(row2, 'Od:', inpFrom);
+
+    var inpTo = document.createElement('input');
+    inpTo.type = 'datetime-local';
+    makeField(row2, 'Do:', inpTo);
+
+    var whisperToggle = makeToggle(row2, '\u0160ept\u00e1n\u00ed:', [
+      { label: 'V\u0161e', value: '' },
+      { label: 'Ano', value: 'yes' },
+      { label: 'Ne', value: 'no' }
+    ], '');
+
+    var highlightToggle = makeToggle(row2, 'Zv\u00fdraznit nick:', [
       { label: 'Ne', value: 'no' },
       { label: 'Ano', value: 'yes' }
     ], 'no');
 
-    var dateToggle = makeToggle('Zobrazit datum:', [
+    var dateToggle = makeToggle(row2, 'Zobrazit datum:', [
       { label: 'Ne', value: 'no' },
       { label: 'Ano', value: 'yes' }
     ], 'no');
@@ -1635,11 +1686,18 @@
     var searchBtn = document.createElement('button');
     searchBtn.textContent = 'Hledat';
     searchBtn.style.cssText = 'background: #4a90d9; color: #fff; border-color: #3a70b0; font-weight: bold;';
-    toolbar.appendChild(searchBtn);
+    row2.appendChild(searchBtn);
 
+    toolbar.appendChild(row1);
+    toolbar.appendChild(row2);
     document.body.appendChild(toolbar);
 
-    // ── Actions bar ──
+    // ── Results ──
+    var resultsDiv = document.createElement('div');
+    resultsDiv.className = 'hist-results';
+    document.body.appendChild(resultsDiv);
+
+    // ── Actions bar (sticky bottom) ──
     var actions = document.createElement('div');
     actions.className = 'hist-actions';
 
@@ -1663,11 +1721,6 @@
     actions.appendChild(statusEl);
 
     document.body.appendChild(actions);
-
-    // ── Results ──
-    var resultsDiv = document.createElement('div');
-    resultsDiv.className = 'hist-results';
-    document.body.appendChild(resultsDiv);
 
     var currentResults = [];
 
@@ -1719,13 +1772,14 @@
         var rec = results[i];
         var ts = new Date(rec.timestamp);
         var row = document.createElement('div');
-        row.className = 'hist-msg';
+        var isSystem = rec.message_type === 'system' || rec.message_type === 'system_out';
+        row.className = 'hist-msg' + (isSystem ? ' hist-msg-system' : '');
 
         var timeText = showDate ? formatDate(ts) + ' ' + formatTime(ts) : formatTime(ts);
         var timeSpan = '<span class="ht">' + escapeHtml(timeText) + '</span> ';
 
         var senderClass = 'hs';
-        if (rec.message_type === 'system' || rec.message_type === 'system_out') senderClass += ' hs-system';
+        if (isSystem) senderClass += ' hs-system';
         else if (rec.is_whisper) senderClass += ' hs-whisper';
         else if (rec.message_type === 'advert') senderClass += ' hs-advert';
         else senderClass += ' hs-room';
