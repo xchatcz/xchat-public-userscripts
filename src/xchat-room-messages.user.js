@@ -947,6 +947,24 @@
   // ── Floating whisper windows ──
 
   var floatingWindows = {}; // keyed by normalized nick
+  var FW_STATE_KEY = '_xchat_fw_state';
+
+  function getFloatingState() {
+    try { return JSON.parse(localStorage.getItem(FW_STATE_KEY) || '{}'); } catch { return {}; }
+  }
+
+  function saveFloatingState() {
+    var state = {};
+    for (var k in floatingWindows) {
+      if (floatingWindows.hasOwnProperty(k)) {
+        state[k] = {
+          nick: floatingWindows[k].origNick || k,
+          minimized: floatingWindows[k].el.classList.contains('xchat-fw-minimized')
+        };
+      }
+    }
+    try { localStorage.setItem(FW_STATE_KEY, JSON.stringify(state)); } catch {}
+  }
 
   function getFloatingContainer() {
     var c = document.getElementById('xchat-fw-container');
@@ -988,11 +1006,12 @@
     return location.protocol + '//www.xchat.cz/' + auth + '/modchat?op=whisperingframeset&rid=' + rid + '&wfrom=' + encodeURIComponent(nick);
   }
 
-  function openFloatingWhisper(nick) {
+  function openFloatingWhisper(nick, startMinimized) {
     var key = normNick(nick);
     // If already open, un-minimize
     if (floatingWindows[key]) {
       floatingWindows[key].el.classList.remove('xchat-fw-minimized');
+      saveFloatingState();
       return;
     }
 
@@ -1043,6 +1062,7 @@
     minBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       fw.classList.toggle('xchat-fw-minimized');
+      saveFloatingState();
     });
     btnsDiv.appendChild(minBtn);
 
@@ -1075,6 +1095,7 @@
     header.appendChild(btnsDiv);
     header.addEventListener('click', function () {
       fw.classList.toggle('xchat-fw-minimized');
+      saveFloatingState();
     });
     fw.appendChild(header);
 
@@ -1098,13 +1119,17 @@
     head.appendChild(headImg);
     head.addEventListener('click', function () {
       fw.classList.remove('xchat-fw-minimized');
+      saveFloatingState();
     });
+
+    if (startMinimized) fw.classList.add('xchat-fw-minimized');
 
     container.appendChild(fw);
     container.appendChild(head);
 
     // Store reference with room element for live updates
-    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl };
+    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick };
+    saveFloatingState();
 
     // ── Fetch frameset to extract individual frame URLs ──
     fetch(framesetUrl, { credentials: 'include' })
@@ -1272,6 +1297,7 @@
       floatingWindows[key].el.remove();
       if (floatingWindows[key].head) floatingWindows[key].head.remove();
       delete floatingWindows[key];
+      saveFloatingState();
     }
   }
 
@@ -2589,6 +2615,16 @@
     injectFloatingStyles();
     installWhisperOverride();
     try { window.top._xchatUpdateFloatingRoomNames = updateFloatingRoomNames; } catch {}
+
+    // Restore previously open floating whisper windows
+    if (getWhisperMode() === 'floating') {
+      var savedState = getFloatingState();
+      for (var sk in savedState) {
+        if (savedState.hasOwnProperty(sk)) {
+          openFloatingWhisper(savedState[sk].nick, savedState[sk].minimized);
+        }
+      }
+    }
 
     const board = document.getElementById('board');
     if (!board) return;
