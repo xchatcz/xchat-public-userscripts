@@ -632,6 +632,69 @@
     });
     settingsSpan.appendChild(settingsLink);
     hlContainer.parentNode.insertBefore(settingsSpan, hlContainer.nextSibling);
+
+    // ── Countdown override ──
+
+    setupCountdown();
+  }
+
+  var countdownTimer = null;
+
+  function setupCountdown() {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+
+    var customSec = getRefreshInterval();
+    var refreshEl = document.getElementById('refresh') || document.getElementById('refresh-orig');
+
+    if (!customSec || !refreshEl) return;
+
+    // Find the parent text around <strong id="refresh"> (e.g. "obnovení: <strong>5</strong>")
+    var parentNode = refreshEl.parentNode;
+
+    // Remove the original element so native JS can no longer update it
+    // Rename the id so native script loses track
+    refreshEl.id = 'refresh-orig';
+
+    if (customSec === 1) {
+      // Hide the entire "obnovení: X" area
+      // Walk backwards from refreshEl to find "obnovení:" text node
+      var prev = refreshEl.previousSibling;
+      while (prev) {
+        var prevPrev = prev.previousSibling;
+        if (prev.nodeType === Node.TEXT_NODE && /obnoven/i.test(prev.textContent)) {
+          prev.textContent = prev.textContent.replace(/obnoven\u00ed:\s*/i, '');
+          break;
+        }
+        prev = prevPrev;
+      }
+      refreshEl.style.display = 'none';
+
+      // Silent 1s refresh
+      countdownTimer = setInterval(function () {
+        try {
+          if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
+            window.top.roomframe.dataframe.refresh();
+          }
+        } catch {}
+      }, 1000);
+    } else {
+      // Replace counter with own countdown
+      var counter = customSec;
+      refreshEl.textContent = String(counter);
+
+      countdownTimer = setInterval(function () {
+        counter--;
+        if (counter <= 0) {
+          counter = customSec;
+          try {
+            if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
+              window.top.roomframe.dataframe.refresh();
+            }
+          } catch {}
+        }
+        refreshEl.textContent = String(counter);
+      }, 1000);
+    }
   }
 
   // ── Settings modal (shown from infopage) ──
@@ -792,8 +855,10 @@
       setRefreshInterval(newRefresh);
 
       overlay.remove();
-      // Apply refresh immediately
-      startAutoRefresh();
+      // Restart countdown in infopage
+      try {
+        setupCountdown();
+      } catch {}
     });
 
     btns.appendChild(cancelBtn);
@@ -832,7 +897,6 @@
     processAll();
     restoreBoardFilter();
     restoreHighlight();
-    startAutoRefresh();
 
     const board = document.getElementById('board');
     if (!board) return;
