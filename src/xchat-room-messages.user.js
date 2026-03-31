@@ -24,12 +24,12 @@
   };
 
   const ENTRY_RE = /(?:Uživatel(?:ka)?)\s+(\S+)\s+vstoupil[a]?\s+do\s+místnosti/;
-  const STORAGE_KEY = 'xchat_greetings';
+  const STORAGE_KEY = '_xchat_room_message_greetings';
   const FILTER_STYLE_ID = 'xchat-board-filter';
   const HIGHLIGHT_STYLE_ID = 'xchat-board-highlight';
   const KICK_HIGHLIGHT_STYLE_ID = 'xchat-board-kick-highlight';
   var KICK_HIGHLIGHT_CSS = '.systemtext:has(.system.kicked), .systemtext:has(.system.killed) { background: #fcc !important; color: #900 !important; }';
-  const REFRESH_KEY = 'xchat_refresh_interval';
+  const REFRESH_KEY = '_xchat_room_message_refresh_interval';
   var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
 
   var HIGHLIGHT_CSS = [
@@ -81,13 +81,13 @@
     return merged;
   }
 
-  var GREET_BUTTONS_KEY = 'xchat_greet_buttons';
+  var GREET_BUTTONS_KEY = '_xchat_room_message_greet_buttons';
 
   function areGreetButtonsEnabled() {
     try { return localStorage.getItem(GREET_BUTTONS_KEY) !== '0'; } catch { return true; }
   }
 
-  var KICK_HIGHLIGHT_KEY = 'xchat_kick_highlight';
+  var KICK_HIGHLIGHT_KEY = '_xchat_room_message_kick_highlight';
 
   function isKickHighlightOn() {
     try { return localStorage.getItem(KICK_HIGHLIGHT_KEY) === '1'; } catch { return false; }
@@ -559,11 +559,11 @@
   }
 
   function isHighlightOn() {
-    try { return localStorage.getItem('xchat_highlight') === '1'; } catch { return false; }
+    try { return localStorage.getItem('_xchat_room_message_highlight') === '1'; } catch { return false; }
   }
 
   function applyHighlight(on) {
-    try { localStorage.setItem('xchat_highlight', on ? '1' : '0'); } catch {}
+    try { localStorage.setItem('_xchat_room_message_highlight', on ? '1' : '0'); } catch {}
     var startDoc = findBoardDoc();
     if (!startDoc) return;
     var existing = startDoc.getElementById(HIGHLIGHT_STYLE_ID);
