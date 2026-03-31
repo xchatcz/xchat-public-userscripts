@@ -419,7 +419,9 @@
       greetAndRemove(nick, prefix + 'Ahoj :)');
     }));
 
-    frag.appendChild(createCustomButton(nick, prefix));
+    if (getCustomGreeting(nick)) {
+      frag.appendChild(createCustomButton(nick, prefix));
+    }
 
     return frag;
   }
