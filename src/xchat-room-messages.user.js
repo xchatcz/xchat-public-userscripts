@@ -52,7 +52,7 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }
 
-  function findSendForm() {
+  function findOriginalForm() {
     try {
       const frames = window.top.frames;
       for (let i = 0; i < frames.length; i++) {
@@ -62,8 +62,7 @@
           const input = doc.querySelector('#msg') || doc.querySelector('input[name="textarea"]');
           if (input) {
             const form = input.closest('form');
-            const submitBtn = form ? form.querySelector('input[type="submit"][name="submit_text"]') : null;
-            return { input, form, submitBtn };
+            if (form) return form;
           }
         } catch { /* cross-origin */ }
       }
@@ -72,18 +71,56 @@
   }
 
   function sendMessage(text) {
-    const found = findSendForm();
-    if (!found) return;
+    const origForm = findOriginalForm();
+    if (!origForm) return;
 
-    found.input.value = text;
+    // Create a hidden iframe as the submission target,
+    // so the original form and its input are never touched.
+    var iframeName = 'xchat-greet-submit-' + Date.now();
+    var iframe = document.createElement('iframe');
+    iframe.name = iframeName;
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
 
-    // Click the submit button so that onSubmit handlers
-    // (check_command, chatHistorySubmit) are triggered.
-    if (found.submitBtn) {
-      found.submitBtn.click();
-    } else if (found.form) {
-      found.form.requestSubmit();
+    // Build a fake form with the same action, method, and hidden fields.
+    var fakeForm = document.createElement('form');
+    fakeForm.method = origForm.method || 'post';
+    fakeForm.action = origForm.action;
+    fakeForm.target = iframeName;
+    fakeForm.style.display = 'none';
+
+    // Copy all hidden inputs from the original form.
+    var hiddens = origForm.querySelectorAll('input[type="hidden"]');
+    for (var i = 0; i < hiddens.length; i++) {
+      var clone = document.createElement('input');
+      clone.type = 'hidden';
+      clone.name = hiddens[i].name;
+      clone.value = hiddens[i].value;
+      fakeForm.appendChild(clone);
     }
+
+    // Add the message text.
+    var msgInput = document.createElement('input');
+    msgInput.type = 'hidden';
+    msgInput.name = 'textarea';
+    msgInput.value = text;
+    fakeForm.appendChild(msgInput);
+
+    // Add the submit button name so the server treats it as a normal send.
+    var submitInput = document.createElement('input');
+    submitInput.type = 'hidden';
+    submitInput.name = 'submit_text';
+    submitInput.value = 'Poslat';
+    fakeForm.appendChild(submitInput);
+
+    document.body.appendChild(fakeForm);
+    fakeForm.submit();
+
+    // Clean up after submission.
+    setTimeout(function () {
+      fakeForm.remove();
+      iframe.remove();
+    }, 5000);
   }
 
   function injectStyles() {
