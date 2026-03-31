@@ -18,6 +18,7 @@
 
   // ── Konfigurace ──
   var CONFIG = {
+    myNick: '',
     greetings: {
       // 'nick': 'vlastní pozdrav'
     }
@@ -390,10 +391,19 @@
   }
 
   function getMyNick() {
+    if (CONFIG.myNick) return CONFIG.myNick;
     var board = document.getElementById('board');
     if (!board) return null;
-    var el = board.querySelector('.umsg_hmynicki');
-    return el ? el.textContent.trim() : null;
+    // Try system messages "System->Nick:" — always present
+    var sysMsgs = board.querySelectorAll('.umsg_wsystem');
+    for (var i = 0; i < sysMsgs.length; i++) {
+      var t = sysMsgs[i].textContent;
+      var sm = t.match(/^System->(\S+?):/);
+      if (sm) return sm[1];
+    }
+    var myMsg = board.querySelector('.umsg_roomi b');
+    if (myMsg) return myMsg.textContent.trim().replace(/:$/, '');
+    return null;
   }
 
   function removeGreetButtons(nick) {
