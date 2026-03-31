@@ -406,16 +406,16 @@
 
   // ── Board filter (startframe side) ──
 
-  var WHISPER_HIDE = [
-    '#board > div:has(.umsg_whisper)',
-    '#board > div:has(.umsg_whisperi)',
-    '#board > div:has(.umsg_wcross)',
-    '#board > div:has(.umsg_wcrossi)'
-  ].join(', ');
-
   var FILTER_CSS = {
     all: '',
-    room: WHISPER_HIDE + ' { display: none !important; }',
+    room: [
+      '#board > div:has(.umsg_whisper)',
+      '#board > div:has(.umsg_whisperi)',
+      '#board > div:has(.umsg_wcross)',
+      '#board > div:has(.umsg_wcrossi)',
+      '#board > div:has(.umsg_wsystem)',
+      '#board > div:has(.umsg_advert)'
+    ].join(', ') + ' { display: none !important; }',
     whisper: '#board > div:not(:has(.umsg_whisper)):not(:has(.umsg_whisperi)):not(:has(.umsg_wcross)):not(:has(.umsg_wcrossi)) { display: none !important; }'
   };
 
