@@ -1219,7 +1219,7 @@
     getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
-    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons };
+    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: {} };
     saveFloatingState();
 
     // ── Fetch frameset to extract individual frame URLs ──
@@ -1229,33 +1229,137 @@
         var parser = new DOMParser();
         var fsDoc = parser.parseFromString(html, 'text/html');
         var frames = fsDoc.querySelectorAll('frame');
-        var startframeUrl = '';
+        var roomframeUrl = '';
         var textpageUrl = '';
         var userpageUrl = '';
         for (var i = 0; i < frames.length; i++) {
           var src = frames[i].getAttribute('src') || '';
           var name = frames[i].getAttribute('name') || '';
-          if (name === 'roomframe' || /op=startframe/i.test(src)) startframeUrl = src;
+          if (name === 'roomframe' || /op=roomframeng/i.test(src)) roomframeUrl = src;
           else if (name === 'textpage' || /op=textpageng/i.test(src)) textpageUrl = src;
           else if (name === 'userpage' || /op=whisperuserpage/i.test(src)) userpageUrl = src;
         }
 
         // Make URLs absolute
         var base = location.protocol + '//www.xchat.cz/';
-        if (startframeUrl && !/^https?:/.test(startframeUrl)) startframeUrl = base + startframeUrl.replace(/^\//, '');
+        if (roomframeUrl && !/^https?:/.test(roomframeUrl)) roomframeUrl = base + roomframeUrl.replace(/^\//, '');
         if (textpageUrl && !/^https?:/.test(textpageUrl)) textpageUrl = base + textpageUrl.replace(/^\//, '');
         if (userpageUrl && !/^https?:/.test(userpageUrl)) userpageUrl = base + userpageUrl.replace(/^\//, '');
 
-        // ── Load startframe in iframe (without js=1 → uses board+Ajax internally) ──
-        if (startframeUrl) {
-          var sfUrl = startframeUrl.replace(/[&?]js=\d+/g, '');
-          var sfIframe = document.createElement('iframe');
-          sfIframe.className = 'xchat-fw-iframe';
-          sfIframe.src = sfUrl;
-          sfIframe.frameBorder = '0';
+        // ── Load messages from roomframeng via fetch+parse ──
+        if (roomframeUrl) {
+          // Create message container
+          var msgContainer = document.createElement('div');
+          msgContainer.className = 'xchat-fw-messages';
           body.innerHTML = '';
-          body.appendChild(sfIframe);
-          floatingWindows[key].sfIframe = sfIframe;
+          body.appendChild(msgContainer);
+
+          var fetchAndUpdateMessages = function () {
+            if (!floatingWindows[key]) return; // window was closed
+            fetch(roomframeUrl, { credentials: 'include' })
+              .then(function (r2) { return r2.text(); })
+              .then(function (rfHtml) {
+                if (!floatingWindows[key]) return;
+                var rfDoc = parser.parseFromString(rfHtml, 'text/html');
+                var rfBody = rfDoc.body;
+                if (!rfBody) return;
+
+                // Parse messages from the body HTML
+                // Each message line: "HH:MM:SS <font color="..."><span class="..."><b>Nick:</b> Text</span></font><br>"
+                var rawHtml = rfBody.innerHTML;
+                // Split on <br> to get individual message lines
+                var lines = rawHtml.split(/<br\s*\/?>/gi);
+                var newMsgs = [];
+
+                for (var li = 0; li < lines.length; li++) {
+                  var line = lines[li].trim();
+                  if (!line) continue;
+
+                  // Parse time
+                  var timeMatch = line.match(/^(\d{1,2}:\d{2}:\d{2})\s*/);
+                  if (!timeMatch) continue;
+                  var time = timeMatch[1];
+
+                  // Parse the span with class (umsg_whw = their msg, umsg_whwi = my msg)
+                  var spanMatch = line.match(/<span\s+class="([^"]*)">([\s\S]*?)<\/span>/i);
+                  if (!spanMatch) continue;
+                  var msgClass = spanMatch[1]; // umsg_whw or umsg_whwi
+                  var spanContent = spanMatch[2];
+
+                  // Parse color from font tag
+                  var colorMatch = line.match(/<font\s+color="([^"]*)"/i);
+                  var color = colorMatch ? colorMatch[1] : '#282828';
+
+                  // Parse nick and text from span content: <b>Nick:</b> Text
+                  var nickTextMatch = spanContent.match(/<b>([^<]+):<\/b>\s*([\s\S]*)/i);
+                  if (!nickTextMatch) continue;
+                  var msgNick = nickTextMatch[1].trim();
+                  var msgText = nickTextMatch[2].trim();
+
+                  // Unique key to avoid duplicates
+                  var msgKey = time + '|' + msgNick + '|' + msgText;
+
+                  newMsgs.push({
+                    key: msgKey,
+                    time: time,
+                    nick: msgNick,
+                    text: msgText,
+                    color: color,
+                    cls: msgClass
+                  });
+                }
+
+                var seenKeys = floatingWindows[key].seenMsgKeys;
+                var wasAtBottom = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 30;
+
+                // Messages from server come newest-first; we display oldest-first (top to bottom)
+                for (var mi = newMsgs.length - 1; mi >= 0; mi--) {
+                  var msg = newMsgs[mi];
+                  if (seenKeys[msg.key]) continue; // already in DOM
+                  seenKeys[msg.key] = true;
+
+                  var msgEl = document.createElement('div');
+                  msgEl.className = 'xchat-fw-msg ' + (msg.cls === 'umsg_whwi' ? 'xchat-fw-msg-mine' : 'xchat-fw-msg-theirs');
+
+                  var timeSpan = document.createElement('span');
+                  timeSpan.className = 'xchat-fw-msg-time';
+                  timeSpan.textContent = msg.time;
+                  msgEl.appendChild(timeSpan);
+
+                  var nickSpan = document.createElement('span');
+                  nickSpan.className = 'xchat-fw-msg-nick';
+                  nickSpan.style.color = msg.color;
+                  nickSpan.textContent = msg.nick + ':';
+                  msgEl.appendChild(nickSpan);
+
+                  var textSpan = document.createElement('span');
+                  textSpan.className = 'xchat-fw-msg-text';
+                  // Preserve images (smileys) in text
+                  var tmpDiv = document.createElement('div');
+                  tmpDiv.innerHTML = msg.text;
+                  while (tmpDiv.firstChild) textSpan.appendChild(tmpDiv.firstChild);
+                  msgEl.appendChild(textSpan);
+
+                  // Insert at end (oldest to newest, top to bottom)
+                  msgContainer.appendChild(msgEl);
+                }
+
+                // Auto-scroll to bottom if user was near bottom
+                if (wasAtBottom) {
+                  msgContainer.scrollTop = msgContainer.scrollHeight;
+                }
+              })
+              .catch(function () {});
+          };
+
+          // Initial fetch
+          fetchAndUpdateMessages();
+
+          // Periodic polling
+          var interval = getRefreshInterval() || 5;
+          var pollTimer = setInterval(fetchAndUpdateMessages, interval * 1000);
+          floatingWindows[key].pollTimer = pollTimer;
+          floatingWindows[key].fetchMessages = fetchAndUpdateMessages;
         }
 
         // ── Fetch textpage form data for sending ──
@@ -1326,19 +1430,10 @@
           fakeForm.submit();
           hIframe.addEventListener('load', function () {
             fakeForm.remove(); hIframe.remove();
-            // Try to refresh the startframe's board after sending
+            // Refresh messages after sending
             var fwd = floatingWindows[key];
-            if (fwd && fwd.sfIframe) {
-              setTimeout(function () {
-                try {
-                  var sfWin = fwd.sfIframe.contentWindow;
-                  if (sfWin && sfWin.dataframe && sfWin.dataframe.refresh) {
-                    sfWin.dataframe.refresh();
-                  } else if (sfWin) {
-                    sfWin.location.reload();
-                  }
-                } catch {}
-              }, 500);
+            if (fwd && fwd.fetchMessages) {
+              setTimeout(function () { fwd.fetchMessages(); }, 600);
             }
           });
           setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, 10000);
@@ -1388,8 +1483,8 @@
 
   function closeFloatingWhisper(key) {
     if (floatingWindows[key]) {
-      if (floatingWindows[key].sfIframe) {
-        try { floatingWindows[key].sfIframe.src = 'about:blank'; } catch (e) {}
+      if (floatingWindows[key].pollTimer) {
+        clearInterval(floatingWindows[key].pollTimer);
       }
       floatingWindows[key].el.remove();
       if (floatingWindows[key].head) floatingWindows[key].head.remove();
@@ -2872,15 +2967,29 @@
       '  padding: 20px;',
       '  color: #999;',
       '}',
-      '.xchat-fw-body iframe.xchat-fw-iframe {',
-      '  width: 100%;',
+      '.xchat-fw-messages {',
       '  height: 100%;',
-      '  border: none;',
-      '  display: block;',
+      '  overflow-y: auto;',
+      '  display: flex;',
+      '  flex-direction: column;',
       '}',
-      '.xchat-fw-body:has(.xchat-fw-iframe) {',
-      '  padding: 0;',
-      '  overflow: hidden;',
+      '.xchat-fw-msg {',
+      '  padding: 2px 4px;',
+      '  font-size: 12px;',
+      '  line-height: 1.4;',
+      '  word-wrap: break-word;',
+      '}',
+      '.xchat-fw-msg-time {',
+      '  color: #666;',
+      '  margin-right: 4px;',
+      '  font-size: 11px;',
+      '}',
+      '.xchat-fw-msg-nick {',
+      '  font-weight: bold;',
+      '  margin-right: 4px;',
+      '}',
+      '.xchat-fw-msg-text img {',
+      '  vertical-align: middle;',
       '}',
 
       // Pošeptat launcher bubble + window
