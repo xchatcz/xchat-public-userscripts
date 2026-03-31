@@ -489,8 +489,7 @@
     var container = document.createElement('span');
     container.id = 'xchat-filter-links';
 
-    var sep = document.createTextNode(' \u2013 ');
-    container.appendChild(sep);
+    container.appendChild(document.createTextNode(' \u2013 Zobrazit: '));
 
     function renderFilterLinks() {
       while (container.childNodes.length > 1) container.removeChild(container.lastChild);
