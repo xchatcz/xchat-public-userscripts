@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat sklo
 // @namespace    https://www.xchat.cz/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @run-at       document-end
@@ -16,6 +16,29 @@
   try { document.domain = 'xchat.cz'; } catch {}
 
   const ENTRY_RE = /(?:Uživatel(?:ka)?)\s+(\S+)\s+vstoupil[a]?\s+do\s+místnosti/;
+  const STORAGE_KEY = 'xchat_greetings';
+
+  function getSmileyUrl(id) {
+    const bucket = id % 100;
+    return 'https://x.ximg.cz/images/x4/sm/' + bucket + '/' + id + '.gif';
+  }
+
+  function getGreetings() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    } catch { return {}; }
+  }
+
+  function getCustomGreeting(nick) {
+    return getGreetings()[nick] || '';
+  }
+
+  function setCustomGreeting(nick, text) {
+    var data = getGreetings();
+    if (text) data[nick] = text;
+    else delete data[nick];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }
 
   function findSendForm() {
     try {
@@ -66,9 +89,72 @@
       '  background: #eee;',
       '  color: #333;',
       '  vertical-align: middle;',
+      '  display: inline-flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  height: 19px;',
+      '  min-width: 19px;',
+      '  line-height: 15px;',
+      '  box-sizing: border-box;',
       '}',
-      '.xchat-greet-btn:hover {',
+      '.xchat-greet-btn:hover { background: #ddd; }',
+      '.xchat-greet-btn img { vertical-align: middle; height: 12px; }',
+      '.xchat-greet-settings {',
+      '  margin-left: 6px;',
+      '  border-color: #aaa;',
       '  background: #ddd;',
+      '  font-size: 11px;',
+      '}',
+      '.xchat-greet-settings:hover { background: #ccc; }',
+      '.xchat-greet-label {',
+      '  font-size: 10px;',
+      '  font-weight: bold;',
+      '  color: #666;',
+      '  margin: 0 2px 0 4px;',
+      '  vertical-align: middle;',
+      '}',
+      '.xchat-greet-label:first-child { margin-left: 0; }',
+      '.xchat-greet-custom-empty {',
+      '  opacity: 0.5;',
+      '  font-style: italic;',
+      '}',
+      '.xchat-greet-modal-overlay {',
+      '  position: fixed;',
+      '  top: 0; left: 0; right: 0; bottom: 0;',
+      '  background: rgba(0,0,0,0.5);',
+      '  z-index: 99999;',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '}',
+      '.xchat-greet-modal {',
+      '  background: #fff;',
+      '  border: 1px solid #999;',
+      '  border-radius: 6px;',
+      '  padding: 12px 16px;',
+      '  min-width: 280px;',
+      '  font-family: arial, sans-serif;',
+      '  font-size: 12px;',
+      '}',
+      '.xchat-greet-modal h4 {',
+      '  margin: 0 0 8px 0;',
+      '  font-size: 13px;',
+      '}',
+      '.xchat-greet-modal input[type="text"] {',
+      '  width: 100%;',
+      '  box-sizing: border-box;',
+      '  padding: 4px 6px;',
+      '  font-size: 12px;',
+      '  margin-bottom: 8px;',
+      '}',
+      '.xchat-greet-modal-buttons {',
+      '  text-align: right;',
+      '}',
+      '.xchat-greet-modal-buttons button {',
+      '  margin-left: 6px;',
+      '  padding: 3px 10px;',
+      '  font-size: 11px;',
+      '  cursor: pointer;',
       '}',
     ].join('\n');
     document.head.appendChild(style);
@@ -81,6 +167,134 @@
     btn.title = title;
     btn.addEventListener('click', onclick);
     return btn;
+  }
+
+  function createSmileyButton(title, onclick) {
+    const btn = document.createElement('span');
+    btn.className = 'xchat-greet-btn';
+    btn.title = title;
+    const img = document.createElement('img');
+    img.src = getSmileyUrl(22);
+    img.alt = '*22*';
+    btn.appendChild(img);
+    btn.addEventListener('click', onclick);
+    return btn;
+  }
+
+  function createCustomButton(nick, prefix) {
+    const greeting = getCustomGreeting(nick);
+    const btn = document.createElement('span');
+    btn.className = 'xchat-greet-btn';
+    btn.dataset.xchatGreetCustom = prefix;
+    btn.dataset.xchatGreetNick = nick;
+    if (greeting) {
+      btn.textContent = greeting;
+      btn.title = 'Vlastní: ' + greeting;
+    } else {
+      btn.textContent = '\u2026';
+      btn.title = 'Vlastní pozdrav (nastav přes Nastavit)';
+      btn.classList.add('xchat-greet-custom-empty');
+    }
+    btn.addEventListener('click', function () {
+      const current = getCustomGreeting(nick);
+      if (!current) return;
+      sendMessage(prefix + current);
+    });
+    return btn;
+  }
+
+  function refreshCustomButtons(nick) {
+    var greeting = getCustomGreeting(nick);
+    var btns = document.querySelectorAll('.xchat-greet-btn[data-xchat-greet-nick="' + nick + '"]');
+    for (var i = 0; i < btns.length; i++) {
+      var btn = btns[i];
+      if (greeting) {
+        btn.textContent = greeting;
+        btn.title = 'Vlastní: ' + greeting;
+        btn.classList.remove('xchat-greet-custom-empty');
+      } else {
+        btn.textContent = '\u2026';
+        btn.title = 'Vlastní pozdrav (nastav přes Nastavit)';
+        btn.classList.add('xchat-greet-custom-empty');
+      }
+    }
+  }
+
+  function showGreetingModal(nick) {
+    var existing = document.querySelector('.xchat-greet-modal-overlay');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.className = 'xchat-greet-modal-overlay';
+
+    var modal = document.createElement('div');
+    modal.className = 'xchat-greet-modal';
+
+    var h4 = document.createElement('h4');
+    h4.textContent = 'Vlastní pozdrav pro ' + nick;
+    modal.appendChild(h4);
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 200;
+    input.value = getCustomGreeting(nick);
+    input.placeholder = 'Např. Čau, jak se máš? *22*';
+    modal.appendChild(input);
+
+    var btns = document.createElement('div');
+    btns.className = 'xchat-greet-modal-buttons';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Zrušit';
+    cancelBtn.addEventListener('click', function () { overlay.remove(); });
+
+    var saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.textContent = 'Uložit';
+    saveBtn.addEventListener('click', function () {
+      setCustomGreeting(nick, input.value.trim());
+      refreshCustomButtons(nick);
+      overlay.remove();
+    });
+
+    btns.appendChild(cancelBtn);
+    btns.appendChild(saveBtn);
+    modal.appendChild(btns);
+    overlay.appendChild(modal);
+
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    document.body.appendChild(overlay);
+    input.focus();
+    input.select();
+  }
+
+  function buildButtonGroup(nick, label, prefix) {
+    var frag = document.createDocumentFragment();
+
+    var lbl = document.createElement('span');
+    lbl.className = 'xchat-greet-label';
+    lbl.textContent = label + ':';
+    frag.appendChild(lbl);
+
+    frag.appendChild(createSmileyButton(label + ': Ahoj *22*', function () {
+      sendMessage(prefix + 'Ahoj *22*');
+    }));
+
+    frag.appendChild(createGreetButton('Ahoj', label + ': Ahoj', function () {
+      sendMessage(prefix + 'Ahoj');
+    }));
+
+    frag.appendChild(createGreetButton(':)', label + ': Ahoj :)', function () {
+      sendMessage(prefix + 'Ahoj :)');
+    }));
+
+    frag.appendChild(createCustomButton(nick, prefix));
+
+    return frag;
   }
 
   function processEntryDiv(div) {
@@ -99,15 +313,19 @@
     const flexImg = span.querySelector('img.flex');
     if (!flexImg) return;
 
-    const btnPublic = createGreetButton('Sklo', 'Pozdravit na skle', function () {
-      sendMessage(nick + ': Ahoj :)');
-    });
+    const wrapper = document.createElement('span');
 
-    const btnWhisper = createGreetButton('Šepot', 'Pozdravit šeptem', function () {
-      sendMessage('/m ' + nick + ' Ahoj :)');
+    wrapper.appendChild(buildButtonGroup(nick, 'Sklo', nick + ': '));
+    wrapper.appendChild(document.createTextNode(' '));
+    wrapper.appendChild(buildButtonGroup(nick, 'Šeptem', '/m ' + nick + ' '));
+    wrapper.appendChild(document.createTextNode(' '));
+    var settingsBtn = createGreetButton('\u2699', 'Nastavit vlastní pozdrav pro ' + nick, function () {
+      showGreetingModal(nick);
     });
+    settingsBtn.classList.add('xchat-greet-settings');
+    wrapper.appendChild(settingsBtn);
 
-    flexImg.replaceWith(btnPublic, document.createTextNode(' '), btnWhisper);
+    flexImg.replaceWith(wrapper);
   }
 
   function processAll() {
