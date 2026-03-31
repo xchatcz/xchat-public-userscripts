@@ -1486,9 +1486,9 @@
 
   function msgTypeLabel(t) {
     var map = {
-      room: 'M\u00edstnost', room_out: 'M\u00edstnost (odchoz\u00ed)',
-      whisper: '\u0160ept\u00e1n\u00ed', whisper_out: '\u0160ept\u00e1n\u00ed (odchoz\u00ed)',
-      system: 'Syst\u00e9m', system_out: 'Syst\u00e9m',
+      room: 'M\u00edstnost', room_out: 'M\u00edstnost (out)',
+      whisper: '\u0160ept\u00e1n\u00ed', whisper_out: '\u0160ept\u00e1n\u00ed (out)',
+      system: 'Syst\u00e9m', system_out: 'Syst\u00e9m (out)',
       advert: 'Reklama'
     };
     return map[t] || t;
@@ -1530,7 +1530,7 @@
       '.hist-row label { font-size: 11px; font-weight: bold; white-space: nowrap; }',
       '.hist-row input, .hist-row select { font-size: 11px; padding: 2px 4px; border: 1px solid #aaa; border-radius: 3px; }',
       '.hist-row input[type="text"] { width: 100px; }',
-      '.hist-row input[type="datetime-local"] { width: 160px; }',
+      '.hist-row input[type="datetime-local"] { width: 140px; }',
       '.hist-row button { font-size: 11px; padding: 3px 10px; cursor: pointer; border: 1px solid #888; border-radius: 3px; background: #ddd; }',
       '.hist-row button:hover { background: #ccc; }',
       '.hist-toggle { display: inline-flex; gap: 2px; }',
@@ -1543,6 +1543,7 @@
       '.hist-msg .hs { font-weight: bold; }',
       '.hist-msg .hs-system { color: #666; font-weight: normal; }',
       '.hist-msg .hs-whisper { color: #906; }',
+      '.hist-msg.hist-msg-whisper { background: #f9f0f5; }',
       '.hist-msg .hs-room { color: #006; }',
       '.hist-msg .hs-advert { color: #999; }',
       '.hist-msg .hc { }',
@@ -1618,7 +1619,7 @@
 
     var selType = document.createElement('select');
     var types = ['', 'room', 'room_out', 'whisper', 'whisper_out', 'system', 'advert'];
-    var typeLabels = ['V\u0161e', 'M\u00edstnost', 'M\u00edstnost (odchoz\u00ed)', '\u0160ept\u00e1n\u00ed', '\u0160ept\u00e1n\u00ed (odchoz\u00ed)', 'Syst\u00e9m', 'Reklama'];
+    var typeLabels = ['V\u0161e', 'M\u00edstnost', 'M\u00edstnost (out)', '\u0160ept\u00e1n\u00ed', '\u0160ept\u00e1n\u00ed (out)', 'Syst\u00e9m', 'Reklama'];
     for (var t = 0; t < types.length; t++) {
       var o = document.createElement('option');
       o.value = types[t];
@@ -1673,15 +1674,20 @@
       { label: 'Ne', value: 'no' }
     ], '');
 
-    var highlightToggle = makeToggle(row2, 'Zv\u00fdraznit nick:', [
+    var highlightToggle = makeToggle(row2, 'Zv\u00fdraznit:', [
       { label: 'Ne', value: 'no' },
       { label: 'Ano', value: 'yes' }
     ], 'no');
 
-    var dateToggle = makeToggle(row2, 'Zobrazit datum:', [
+    var dateToggle = makeToggle(row2, 'Datum:', [
       { label: 'Ne', value: 'no' },
       { label: 'Ano', value: 'yes' }
     ], 'no');
+
+    var orderToggle = makeToggle(row2, 'Nov\u00e9 zpr\u00e1vy:', [
+      { label: 'Naho\u0159e', value: 'top' },
+      { label: 'Dole', value: 'bottom' }
+    ], 'top');
 
     var searchBtn = document.createElement('button');
     searchBtn.textContent = 'Hledat';
@@ -1776,14 +1782,15 @@
         var ts = new Date(rec.timestamp);
         var row = document.createElement('div');
         var isSystem = rec.message_type === 'system' || rec.message_type === 'system_out';
-        row.className = 'hist-msg' + (isSystem ? ' hist-msg-system' : '');
+        var isWhisper = !!rec.is_whisper || /^whisper/.test(rec.message_type) || /^wcross/.test(rec.message_type);
+        row.className = 'hist-msg' + (isSystem ? ' hist-msg-system' : '') + (isWhisper ? ' hist-msg-whisper' : '');
 
         var timeText = showDate ? formatDate(ts) + ' ' + formatTime(ts) : formatTime(ts);
         var timeSpan = '<span class="ht">' + escapeHtml(timeText) + '</span> ';
 
         var senderClass = 'hs';
         if (isSystem) senderClass += ' hs-system';
-        else if (rec.is_whisper) senderClass += ' hs-whisper';
+        else if (isWhisper) senderClass += ' hs-whisper';
         else if (rec.message_type === 'advert') senderClass += ' hs-advert';
         else senderClass += ' hs-room';
 
@@ -1812,7 +1819,11 @@
       resultsDiv.innerHTML = '';
       var filters = getFilters();
       dbQuery(filters).then(function (results) {
-        results.sort(function (a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+        var asc = orderToggle.get() !== 'top';
+        results.sort(function (a, b) {
+          var diff = new Date(a.timestamp) - new Date(b.timestamp);
+          return asc ? diff : -diff;
+        });
         renderResults(results);
       }).catch(function (err) {
         statusEl.textContent = 'Chyba: ' + err;
