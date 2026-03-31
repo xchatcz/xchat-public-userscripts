@@ -971,60 +971,71 @@
     return '';
   }
 
+  function getAuthPath() {
+    var auth = '';
+    try { auth = window.top.my_auth || ''; } catch {}
+    if (!auth) {
+      var m = location.pathname.match(/(~[^/]+)/);
+      if (m) auth = m[1];
+    }
+    return auth;
+  }
+
+  function buildWhisperBaseUrl(nick) {
+    var auth = getAuthPath();
+    var rid = 0;
+    try { rid = window.top.rid || 0; } catch {}
+    return location.protocol + '//www.xchat.cz/' + auth + '/modchat?op=whisperingframeset&rid=' + rid + '&wfrom=' + encodeURIComponent(nick);
+  }
+
   function openFloatingWhisper(nick) {
     var key = normNick(nick);
-    // If already open, un-minimize and focus
+    // If already open, un-minimize
     if (floatingWindows[key]) {
-      var existing = floatingWindows[key];
-      existing.classList.remove('xchat-fw-minimized');
+      floatingWindows[key].el.classList.remove('xchat-fw-minimized');
       return;
     }
 
     var container = getFloatingContainer();
+    var framesetUrl = buildWhisperBaseUrl(nick);
 
-    // Build whisper URL
-    var auth = '';
-    var rid = 0;
-    try { auth = window.top.my_auth || ''; } catch {}
-    try { rid = window.top.rid || 0; } catch {}
-    if (!auth) {
-      var m = location.pathname.match(/(\/~[^/]+\/)/);
-      if (m) auth = m[1].replace(/^\//, '').replace(/\/$/, '');
-    }
-    var proto = location.protocol;
-    var whisperUrl = proto + '//www.xchat.cz/' + auth + '/modchat?op=whisperingframeset&rid=' + rid + '&wfrom=' + encodeURIComponent(nick);
-
-    // Create floating window
+    // Create the window shell immediately
     var fw = document.createElement('div');
     fw.className = 'xchat-fw';
     fw.dataset.nick = key;
 
-    // Header
+    // ── Header ──
     var header = document.createElement('div');
     header.className = 'xchat-fw-header';
 
     var info = document.createElement('div');
     info.className = 'xchat-fw-header-info';
 
+    var iconsSpan = document.createElement('span');
+    iconsSpan.className = 'xchat-fw-icons';
+    info.appendChild(iconsSpan);
+
+    var texts = document.createElement('div');
+    texts.className = 'xchat-fw-texts';
+
     var nickEl = document.createElement('div');
     nickEl.className = 'xchat-fw-nick';
     nickEl.textContent = nick;
-    info.appendChild(nickEl);
+    texts.appendChild(nickEl);
 
-    var roomName = getRoomName();
-    if (roomName) {
-      var roomEl = document.createElement('div');
-      roomEl.className = 'xchat-fw-room';
-      roomEl.textContent = 'v m\u00edstnosti \u201e' + roomName + '\u201c';
-      info.appendChild(roomEl);
-    }
+    var roomEl = document.createElement('div');
+    roomEl.className = 'xchat-fw-room';
+    var rn = getRoomName();
+    roomEl.textContent = rn ? 'v m\u00edstnosti \u201e' + rn + '\u201c' : '';
+    texts.appendChild(roomEl);
 
+    info.appendChild(texts);
     header.appendChild(info);
 
     var btnsDiv = document.createElement('div');
     btnsDiv.className = 'xchat-fw-header-btns';
 
-    // Minimize button
+    // Minimize
     var minBtn = document.createElement('button');
     minBtn.className = 'xchat-fw-header-btn';
     minBtn.textContent = '\u2013';
@@ -1035,23 +1046,22 @@
     });
     btnsDiv.appendChild(minBtn);
 
-    // Popup button — open in classic popup
+    // Popup
     var popBtn = document.createElement('button');
     popBtn.className = 'xchat-fw-header-btn';
     popBtn.innerHTML = '&#8599;';
     popBtn.title = 'Otev\u0159\u00edt ve vyskakovac\u00edm okn\u011b';
     popBtn.addEventListener('click', function (e) {
       e.stopPropagation();
-      // Open in classic popup and close floating
       try {
         var uid = window.top.uid || '';
-        window.open(whisperUrl, uid + '_' + key, 'width=500,height=400,resizable=yes,scrolling=no,menubar=no,location=no,statusbar=no');
+        window.open(framesetUrl, uid + '_' + key, 'width=500,height=400,resizable=yes,scrolling=no,menubar=no,location=no,statusbar=no');
       } catch {}
       closeFloatingWhisper(key);
     });
     btnsDiv.appendChild(popBtn);
 
-    // Close button
+    // Close
     var closeBtn = document.createElement('button');
     closeBtn.className = 'xchat-fw-header-btn';
     closeBtn.textContent = '\u00d7';
@@ -1063,33 +1073,124 @@
     btnsDiv.appendChild(closeBtn);
 
     header.appendChild(btnsDiv);
-
-    // Click header to toggle minimize
     header.addEventListener('click', function () {
       fw.classList.toggle('xchat-fw-minimized');
     });
-
     fw.appendChild(header);
 
-    // Body with iframe
+    // ── Body (startframe iframe, filled after fetch) ──
     var body = document.createElement('div');
     body.className = 'xchat-fw-body';
-
-    var iframe = document.createElement('iframe');
-    iframe.src = whisperUrl;
-    iframe.setAttribute('allow', 'autoplay');
-    body.appendChild(iframe);
-
     fw.appendChild(body);
 
+    // ── Footer (textpageng iframe, filled after fetch) ──
+    var footer = document.createElement('div');
+    footer.className = 'xchat-fw-footer';
+    fw.appendChild(footer);
+
+    // ── Avatar head (shown when minimized) ──
+    var head = document.createElement('div');
+    head.className = 'xchat-fw-head';
+    head.title = nick;
+    var headImg = document.createElement('img');
+    headImg.src = 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
+    headImg.alt = nick;
+    head.appendChild(headImg);
+    head.addEventListener('click', function () {
+      fw.classList.remove('xchat-fw-minimized');
+    });
+
     container.appendChild(fw);
-    floatingWindows[key] = fw;
+    container.appendChild(head);
+
+    // Store reference with room element for live updates
+    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl };
+
+    // ── Fetch frameset to extract individual frame URLs ──
+    fetch(framesetUrl, { credentials: 'include' })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var parser = new DOMParser();
+        var fsDoc = parser.parseFromString(html, 'text/html');
+        var frames = fsDoc.querySelectorAll('frame');
+        var startframeUrl = '';
+        var textpageUrl = '';
+        var userpageUrl = '';
+        for (var i = 0; i < frames.length; i++) {
+          var src = frames[i].getAttribute('src') || '';
+          var name = frames[i].getAttribute('name') || '';
+          if (name === 'roomframe' || /op=startframe/i.test(src)) startframeUrl = src;
+          else if (name === 'textpage' || /op=textpageng/i.test(src)) textpageUrl = src;
+          else if (name === 'userpage' || /op=whisperuserpage/i.test(src)) userpageUrl = src;
+        }
+
+        // Make URLs absolute
+        var base = location.protocol + '//www.xchat.cz/';
+        if (startframeUrl && !/^https?:/.test(startframeUrl)) startframeUrl = base + startframeUrl.replace(/^\//, '');
+        if (textpageUrl && !/^https?:/.test(textpageUrl)) textpageUrl = base + textpageUrl.replace(/^\//, '');
+        if (userpageUrl && !/^https?:/.test(userpageUrl)) userpageUrl = base + userpageUrl.replace(/^\//, '');
+
+        // Load startframe (messages)
+        if (startframeUrl) {
+          var sfIframe = document.createElement('iframe');
+          sfIframe.src = startframeUrl;
+          sfIframe.setAttribute('allow', 'autoplay');
+          body.appendChild(sfIframe);
+        }
+
+        // Load textpage (input)
+        if (textpageUrl) {
+          var tpIframe = document.createElement('iframe');
+          tpIframe.src = textpageUrl;
+          footer.appendChild(tpIframe);
+        }
+
+        // Fetch userpage for status icons (skip photos and smileys)
+        if (userpageUrl) {
+          fetch(userpageUrl, { credentials: 'include' })
+            .then(function (r2) { return r2.text(); })
+            .then(function (upHtml) {
+              var upDoc = parser.parseFromString(upHtml, 'text/html');
+              var crdiv = upDoc.getElementById('crdiv1');
+              if (!crdiv) return;
+              var imgs = crdiv.querySelectorAll('img');
+              for (var ii = 0; ii < imgs.length; ii++) {
+                var src = imgs[ii].getAttribute('src') || '';
+                // Skip personal photos, smileys and pict_ icons
+                if (/images\/personal\//i.test(src)) continue;
+                if (/images\/x4\/sm\//i.test(src)) continue;
+                if (/\/pict_/i.test(src)) continue;
+                var img = document.createElement('img');
+                img.src = src;
+                img.border = '0';
+                iconsSpan.appendChild(img);
+              }
+            })
+            .catch(function () { /* icons are optional */ });
+        }
+      })
+      .catch(function () {
+        // Fallback: show error in body
+        body.textContent = 'Nepoda\u0159ilo se na\u010d\u00edst \u0161ept.';
+      });
   }
 
   function closeFloatingWhisper(key) {
     if (floatingWindows[key]) {
-      floatingWindows[key].remove();
+      floatingWindows[key].el.remove();
+      if (floatingWindows[key].head) floatingWindows[key].head.remove();
       delete floatingWindows[key];
+    }
+  }
+
+  // Update room names in all open floating windows
+  function updateFloatingRoomNames() {
+    var rn = getRoomName();
+    var text = rn ? 'v m\u00edstnosti \u201e' + rn + '\u201c' : '';
+    for (var k in floatingWindows) {
+      if (floatingWindows.hasOwnProperty(k) && floatingWindows[k].roomEl) {
+        floatingWindows[k].roomEl.textContent = text;
+      }
     }
   }
 
@@ -1158,6 +1259,8 @@
         if (roomName && rooms[rid] !== roomName) {
           rooms[rid] = roomName;
           setSetting('rooms', rooms);
+          // Update floating whisper window headers
+          try { if (typeof window.top._xchatUpdateFloatingRoomNames === 'function') window.top._xchatUpdateFloatingRoomNames(); } catch {}
         }
         // Show RID in parentheses after room name link
         if (getSetting('showRid', true)) {
@@ -2187,7 +2290,7 @@
       '}',
       '.xchat-fw {',
       '  pointer-events: auto;',
-      '  width: 340px;',
+      '  width: 320px;',
       '  height: 400px;',
       '  background: #fff;',
       '  border: 1px solid #999;',
@@ -2200,10 +2303,57 @@
       '  overflow: hidden;',
       '}',
       '.xchat-fw.xchat-fw-minimized {',
-      '  height: auto;',
+      '  display: none;',
       '}',
+      '.xchat-fw-head {',
+      '  pointer-events: auto;',
+      '  width: 40px;',
+      '  height: 40px;',
+      '  border-radius: 50%;',
+      '  overflow: hidden;',
+      '  cursor: pointer;',
+      '  box-shadow: 0 2px 8px rgba(0,0,0,0.3);',
+      '  border: 2px solid #fff;',
+      '  display: none;',
+      '  flex-shrink: 0;',
+      '  margin-bottom: 8px;',
+      '}',
+      '.xchat-fw-head img {',
+      '  width: 100%;',
+      '  height: 100%;',
+      '  object-fit: cover;',
+      '  display: block;',
+      '}',
+      '.xchat-fw-minimized + .xchat-fw-head {',
+      '  display: block;',
+      '}',
+      '.xchat-fw-head:hover {',
+      '  box-shadow: 0 2px 12px rgba(0,0,0,0.5);',
+      '}',
+      '.xchat-fw-head::after {',
+      '  content: attr(title);',
+      '  position: absolute;',
+      '  bottom: 100%;',
+      '  left: 50%;',
+      '  transform: translateX(-50%);',
+      '  background: rgba(0,0,0,0.75);',
+      '  color: #fff;',
+      '  font-size: 11px;',
+      '  padding: 2px 6px;',
+      '  border-radius: 3px;',
+      '  white-space: nowrap;',
+      '  display: none;',
+      '  pointer-events: none;',
+      '}',
+      '.xchat-fw-head {',
+      '  position: relative;',
+      '}',
+      '.xchat-fw-head:hover::after {',
+      '  display: block;',
+      '}',
+
       '.xchat-fw-header {',
-      '  background: #3b5998;',
+      '  background: #8291A5;',
       '  color: #fff;',
       '  padding: 6px 8px;',
       '  display: flex;',
@@ -2215,6 +2365,22 @@
       '}',
       '.xchat-fw-header-info {',
       '  overflow: hidden;',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 6px;',
+      '  min-width: 0;',
+      '}',
+      '.xchat-fw-icons {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 2px;',
+      '  flex-shrink: 0;',
+      '}',
+      '.xchat-fw-icons img {',
+      '  vertical-align: middle;',
+      '}',
+      '.xchat-fw-texts {',
+      '  min-width: 0;',
       '}',
       '.xchat-fw-nick {',
       '  font-size: 13px;',
@@ -2260,9 +2426,17 @@
       '  height: 100%;',
       '  border: none;',
       '}',
-      '.xchat-fw-minimized .xchat-fw-body {',
-      '  display: none;',
+      '.xchat-fw-footer {',
+      '  flex-shrink: 0;',
+      '  height: 32px;',
+      '  border-top: 1px solid #ccc;',
       '}',
+      '.xchat-fw-footer iframe {',
+      '  width: 100%;',
+      '  height: 100%;',
+      '  border: none;',
+      '}',
+
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -2283,6 +2457,7 @@
     // Floating whisper windows
     injectFloatingStyles();
     installWhisperOverride();
+    try { window.top._xchatUpdateFloatingRoomNames = updateFloatingRoomNames; } catch {}
 
     const board = document.getElementById('board');
     if (!board) return;
