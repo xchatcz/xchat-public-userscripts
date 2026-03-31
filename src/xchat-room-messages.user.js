@@ -29,6 +29,7 @@
   const FILTER_STYLE_ID = 'xchat-board-filter';
   const HIGHLIGHT_STYLE_ID = 'xchat-board-highlight';
   const KICK_HIGHLIGHT_STYLE_ID = 'xchat-board-kick-highlight';
+  const BAD_CMD_STYLE_ID = 'xchat-board-hide-badcmd';
   var KICK_HIGHLIGHT_CSS = '.systemtext:has(.system.kicked), .systemtext:has(.system.killed) { background: #fcc !important; color: #900 !important; }';
   var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
 
@@ -106,6 +107,10 @@
 
   function isKickHighlightOn() {
     return getSetting('kickHighlight', false);
+  }
+
+  function isHideBadCommands() {
+    return getSetting('hideBadCommands', false);
   }
 
   function getRefreshInterval() {
@@ -634,6 +639,43 @@
     if (isKickHighlightOn()) applyKickHighlight(true);
   }
 
+  function markBadCommandDiv(div) {
+    var sys = div.querySelector('.umsg_wsystem');
+    if (!sys) return;
+    var b = sys.querySelector('b');
+    if (!b) return;
+    var afterBold = '';
+    var node = b.nextSibling;
+    while (node) { afterBold += node.textContent || ''; node = node.nextSibling; }
+    if (afterBold.trim() === '\u0160patn\u00fd p\u0159\u00edkaz') div.classList.add('xchat-badcmd');
+  }
+
+  function markAllBadCommands() {
+    var board = document.getElementById('board');
+    if (!board) return;
+    var divs = board.querySelectorAll(':scope > div');
+    for (var i = 0; i < divs.length; i++) markBadCommandDiv(divs[i]);
+  }
+
+  function applyHideBadCommands(on) {
+    var startDoc = findBoardDoc();
+    if (!startDoc) return;
+    var existing = startDoc.getElementById(BAD_CMD_STYLE_ID);
+    if (!on) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
+    var style = startDoc.createElement('style');
+    style.id = BAD_CMD_STYLE_ID;
+    style.textContent = '.xchat-badcmd { display: none !important; }';
+    startDoc.head.appendChild(style);
+  }
+
+  function restoreHideBadCommands() {
+    if (isHideBadCommands()) applyHideBadCommands(true);
+  }
+
   // ── Infopage: filter links ──
 
   function initInfopage() {
@@ -976,6 +1018,21 @@
     });
     modal.appendChild(deleteAllBtn);
 
+    // ── Hide bad commands toggle ──
+    var badCmdRow = targetDoc.createElement('div');
+    badCmdRow.style.cssText = 'margin-top: 6px;';
+    var badCmdCheckbox = targetDoc.createElement('input');
+    badCmdCheckbox.type = 'checkbox';
+    badCmdCheckbox.id = 'xchat-hide-badcmd-toggle';
+    badCmdCheckbox.checked = isHideBadCommands();
+    badCmdRow.appendChild(badCmdCheckbox);
+    var badCmdLabel = targetDoc.createElement('label');
+    badCmdLabel.htmlFor = 'xchat-hide-badcmd-toggle';
+    badCmdLabel.textContent = ' Skr\u00fdt nepoveden\u00e9 p\u0159\u00edkazy';
+    badCmdLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    badCmdRow.appendChild(badCmdLabel);
+    modal.appendChild(badCmdRow);
+
     // ── Kick highlight toggle ──
     var kickRow = targetDoc.createElement('div');
     kickRow.style.cssText = 'margin-top: 6px;';
@@ -1042,12 +1099,14 @@
       s.greetings = newData;
       s.greetButtons = greetBtnCheckbox.checked;
       s.kickHighlight = kickCheckbox.checked;
+      s.hideBadCommands = badCmdCheckbox.checked;
       s.highlight = getSetting('highlight', false);
       s.refreshInterval = parseInt(sel.value, 10) || 0;
       saveSettings(s);
 
-      // Apply kick highlight CSS
+      // Apply CSS changes
       applyKickHighlight(kickCheckbox.checked);
+      applyHideBadCommands(badCmdCheckbox.checked);
 
       overlay.remove();
       // Restart countdown in infopage
@@ -1093,6 +1152,8 @@
     restoreBoardFilter();
     restoreHighlight();
     restoreKickHighlight();
+    markAllBadCommands();
+    restoreHideBadCommands();
 
     const board = document.getElementById('board');
     if (!board) return;
@@ -1102,6 +1163,7 @@
         for (const node of mut.addedNodes) {
           if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'DIV') {
             processEntryDiv(node);
+            markBadCommandDiv(node);
           }
         }
       }
