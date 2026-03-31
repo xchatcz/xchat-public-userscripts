@@ -307,7 +307,7 @@
     btn.addEventListener('click', function () {
       const current = getCustomGreeting(nick);
       if (!current) return;
-      sendMessage(prefix + current);
+      greetAndRemove(nick, prefix + current);
     });
     return btn;
   }
@@ -381,6 +381,16 @@
     input.select();
   }
 
+  function removeGreetButtons(nick) {
+    var wrappers = document.querySelectorAll('[data-xchat-greet-wrapper="' + nick + '"]');
+    for (var i = 0; i < wrappers.length; i++) wrappers[i].remove();
+  }
+
+  function greetAndRemove(nick, text) {
+    sendMessage(text);
+    removeGreetButtons(nick);
+  }
+
   function buildButtonGroup(nick, label, prefix) {
     var frag = document.createDocumentFragment();
 
@@ -390,20 +400,49 @@
     frag.appendChild(lbl);
 
     frag.appendChild(createSmileyButton(label + ': Ahoj *22*', function () {
-      sendMessage(prefix + 'Ahoj *22*');
+      greetAndRemove(nick, prefix + 'Ahoj *22*');
     }));
 
     frag.appendChild(createGreetButton('Ahoj', label + ': Ahoj', function () {
-      sendMessage(prefix + 'Ahoj');
+      greetAndRemove(nick, prefix + 'Ahoj');
     }));
 
     frag.appendChild(createGreetButton(':)', label + ': Ahoj :)', function () {
-      sendMessage(prefix + 'Ahoj :)');
+      greetAndRemove(nick, prefix + 'Ahoj :)');
     }));
 
     frag.appendChild(createCustomButton(nick, prefix));
 
     return frag;
+  }
+
+  function hasMessagesForNick(nick) {
+    var board = document.getElementById('board');
+    if (!board) return false;
+
+    // Check whispers from me to nick: umsg_whisperi contains a link with nick text
+    var whispers = board.querySelectorAll('.umsg_whisperi a');
+    for (var i = 0; i < whispers.length; i++) {
+      if (whispers[i].textContent.trim() === nick) return true;
+    }
+
+    // Check room messages from me addressing nick: umsg_roomi text starts with "nick:"
+    var rooms = board.querySelectorAll('.umsg_roomi');
+    var prefix = nick + ':';
+    for (var i = 0; i < rooms.length; i++) {
+      // Text after the sender bold, e.g. "nick: Ahoj"
+      var b = rooms[i].querySelector('b');
+      if (!b) continue;
+      var afterBold = '';
+      var node = b.nextSibling;
+      while (node) {
+        afterBold += node.textContent || '';
+        node = node.nextSibling;
+      }
+      if (afterBold.trimStart().indexOf(prefix) === 0) return true;
+    }
+
+    return false;
   }
 
   function processEntryDiv(div) {
@@ -421,10 +460,13 @@
 
     const nick = m[1];
 
+    if (hasMessagesForNick(nick)) return;
+
     const flexImg = span.querySelector('img.flex');
     if (!flexImg) return;
 
     const wrapper = document.createElement('span');
+    wrapper.dataset.xchatGreetWrapper = nick;
 
     wrapper.appendChild(buildButtonGroup(nick, 'Sklo', nick + ': '));
     wrapper.appendChild(document.createTextNode(' '));
