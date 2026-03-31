@@ -25,12 +25,11 @@
   };
 
   const ENTRY_RE = /(?:Uživatel(?:ka)?)\s+(\S+)\s+vstoupil[a]?\s+do\s+místnosti/;
-  const STORAGE_KEY = '_xchat_room_message_greetings';
+  const SETTINGS_KEY = '_xchat_room_message_settings';
   const FILTER_STYLE_ID = 'xchat-board-filter';
   const HIGHLIGHT_STYLE_ID = 'xchat-board-highlight';
   const KICK_HIGHLIGHT_STYLE_ID = 'xchat-board-kick-highlight';
   var KICK_HIGHLIGHT_CSS = '.systemtext:has(.system.kicked), .systemtext:has(.system.killed) { background: #fcc !important; color: #900 !important; }';
-  const REFRESH_KEY = '_xchat_room_message_refresh_interval';
   var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
 
   var HIGHLIGHT_CSS = [
@@ -63,10 +62,29 @@
     });
   }
 
-  function getGreetings() {
+  function getSettings() {
     try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
     } catch { return {}; }
+  }
+
+  function saveSettings(settings) {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
+  }
+
+  function getSetting(key, def) {
+    var s = getSettings();
+    return s.hasOwnProperty(key) ? s[key] : def;
+  }
+
+  function setSetting(key, val) {
+    var s = getSettings();
+    s[key] = val;
+    saveSettings(s);
+  }
+
+  function getGreetings() {
+    return getSetting('greetings', {});
   }
 
   function getCustomGreeting(nick) {
@@ -82,31 +100,23 @@
     return merged;
   }
 
-  var GREET_BUTTONS_KEY = '_xchat_room_message_greet_buttons';
-
   function areGreetButtonsEnabled() {
-    try { return localStorage.getItem(GREET_BUTTONS_KEY) !== '0'; } catch { return true; }
+    return getSetting('greetButtons', true);
   }
 
-  var KICK_HIGHLIGHT_KEY = '_xchat_room_message_kick_highlight';
-
   function isKickHighlightOn() {
-    try { return localStorage.getItem(KICK_HIGHLIGHT_KEY) === '1'; } catch { return false; }
+    return getSetting('kickHighlight', false);
   }
 
   function getRefreshInterval() {
-    try { var v = parseInt(localStorage.getItem(REFRESH_KEY), 10); return v > 0 ? v : 0; } catch { return 0; }
-  }
-
-  function setRefreshInterval(sec) {
-    try { if (sec > 0) localStorage.setItem(REFRESH_KEY, String(sec)); else localStorage.removeItem(REFRESH_KEY); } catch {}
+    return getSetting('refreshInterval', 0);
   }
 
   function setCustomGreeting(nick, text) {
     var data = getGreetings();
     if (text) data[nick] = text;
     else delete data[nick];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    setSetting('greetings', data);
   }
 
   function findOriginalForm() {
@@ -581,11 +591,11 @@
   }
 
   function isHighlightOn() {
-    try { return localStorage.getItem('_xchat_room_message_highlight') === '1'; } catch { return false; }
+    return getSetting('highlight', false);
   }
 
   function applyHighlight(on) {
-    try { localStorage.setItem('_xchat_room_message_highlight', on ? '1' : '0'); } catch {}
+    setSetting('highlight', on);
     var startDoc = findBoardDoc();
     if (!startDoc) return;
     var existing = startDoc.getElementById(HIGHLIGHT_STYLE_ID);
@@ -605,7 +615,7 @@
   }
 
   function applyKickHighlight(on) {
-    try { localStorage.setItem(KICK_HIGHLIGHT_KEY, on ? '1' : '0'); } catch {}
+    setSetting('kickHighlight', on);
     var startDoc = findBoardDoc();
     if (!startDoc) return;
     var existing = startDoc.getElementById(KICK_HIGHLIGHT_STYLE_ID);
@@ -1027,17 +1037,17 @@
         var val = greetInputs[nick].value.trim();
         if (val) newData[nick] = val;
       }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
+      // Save all settings at once
+      var s = getSettings();
+      s.greetings = newData;
+      s.greetButtons = greetBtnCheckbox.checked;
+      s.kickHighlight = kickCheckbox.checked;
+      s.highlight = getSetting('highlight', false);
+      s.refreshInterval = parseInt(sel.value, 10) || 0;
+      saveSettings(s);
 
-      // Save greet buttons toggle
-      localStorage.setItem(GREET_BUTTONS_KEY, greetBtnCheckbox.checked ? '1' : '0');
-
-      // Save kick highlight
+      // Apply kick highlight CSS
       applyKickHighlight(kickCheckbox.checked);
-
-      // Save refresh
-      var newRefresh = parseInt(sel.value, 10) || 0;
-      setRefreshInterval(newRefresh);
 
       overlay.remove();
       // Restart countdown in infopage
