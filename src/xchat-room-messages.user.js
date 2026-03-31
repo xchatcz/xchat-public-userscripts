@@ -655,8 +655,8 @@
       overlay.remove();
     });
 
-    btns.appendChild(cancelBtn);
     btns.appendChild(saveBtn);
+    btns.appendChild(cancelBtn);
     modal.appendChild(btns);
     overlay.appendChild(modal);
 
@@ -959,7 +959,9 @@
           setSetting('rooms', rooms);
         }
         // Show RID in parentheses after room name link
-        roomLinks[ri].parentNode.insertBefore(document.createTextNode(' (' + rid + ')'), roomLinks[ri].nextSibling);
+        if (getSetting('showRid', true)) {
+          roomLinks[ri].parentNode.insertBefore(document.createTextNode(' (' + rid + ')'), roomLinks[ri].nextSibling);
+        }
         break;
       }
     }
@@ -1045,6 +1047,7 @@
     hlContainer.appendChild(document.createTextNode(' \u2013 Zv\u00fdraznit: '));
 
     function renderHighlightLinks() {
+      highlightOn = isHighlightOn();
       while (hlContainer.childNodes.length > 1) hlContainer.removeChild(hlContainer.lastChild);
       var options = [
         { on: true, label: 'Ano' },
@@ -1075,6 +1078,7 @@
 
     renderHighlightLinks();
     container.parentNode.insertBefore(hlContainer, container.nextSibling);
+    try { window.top._xchatRenderHighlightLinks = renderHighlightLinks; } catch {}
 
     // ── Settings link ──
 
@@ -1192,7 +1196,130 @@
     h4.textContent = 'Nastaven\u00ed';
     modal.appendChild(h4);
 
-    // ── Greet buttons toggle ──
+    // ── Section: Místnost ──
+    var h5m = targetDoc.createElement('h5');
+    h5m.textContent = 'M\u00edstnost';
+    modal.appendChild(h5m);
+
+    // Highlight my nick toggle
+    var hlRow = targetDoc.createElement('div');
+    var hlCheckbox = targetDoc.createElement('input');
+    hlCheckbox.type = 'checkbox';
+    hlCheckbox.id = 'xchat-highlight-toggle';
+    hlCheckbox.checked = isHighlightOn();
+    hlRow.appendChild(hlCheckbox);
+    var hlLabel = targetDoc.createElement('label');
+    hlLabel.htmlFor = 'xchat-highlight-toggle';
+    hlLabel.textContent = ' Zv\u00fdraznit m\u016fj nick';
+    hlLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    hlRow.appendChild(hlLabel);
+    modal.appendChild(hlRow);
+
+    // Kick highlight toggle
+    var kickRow = targetDoc.createElement('div');
+    kickRow.style.cssText = 'margin-top: 3px;';
+    var kickCheckbox = targetDoc.createElement('input');
+    kickCheckbox.type = 'checkbox';
+    kickCheckbox.id = 'xchat-kick-highlight-toggle';
+    kickCheckbox.checked = isKickHighlightOn();
+    kickRow.appendChild(kickCheckbox);
+    var kickLabel = targetDoc.createElement('label');
+    kickLabel.htmlFor = 'xchat-kick-highlight-toggle';
+    kickLabel.textContent = ' Zv\u00fdraznit kicky \u010derven\u011b';
+    kickLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    kickRow.appendChild(kickLabel);
+    modal.appendChild(kickRow);
+
+    // Show RID toggle
+    var ridRow = targetDoc.createElement('div');
+    ridRow.style.cssText = 'margin-top: 3px;';
+    var ridCheckbox = targetDoc.createElement('input');
+    ridCheckbox.type = 'checkbox';
+    ridCheckbox.id = 'xchat-show-rid-toggle';
+    ridCheckbox.checked = getSetting('showRid', true);
+    ridRow.appendChild(ridCheckbox);
+    var ridLabel = targetDoc.createElement('label');
+    ridLabel.htmlFor = 'xchat-show-rid-toggle';
+    ridLabel.textContent = ' Zobrazovat RID m\u00edstnosti';
+    ridLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    ridRow.appendChild(ridLabel);
+    modal.appendChild(ridRow);
+
+    // Hide bad commands toggle
+    var badCmdRow = targetDoc.createElement('div');
+    badCmdRow.style.cssText = 'margin-top: 3px;';
+    var badCmdCheckbox = targetDoc.createElement('input');
+    badCmdCheckbox.type = 'checkbox';
+    badCmdCheckbox.id = 'xchat-hide-badcmd-toggle';
+    badCmdCheckbox.checked = isHideBadCommands();
+    badCmdRow.appendChild(badCmdCheckbox);
+    var badCmdLabel = targetDoc.createElement('label');
+    badCmdLabel.htmlFor = 'xchat-hide-badcmd-toggle';
+    badCmdLabel.textContent = ' Skr\u00fdt nepoveden\u00e9 p\u0159\u00edkazy';
+    badCmdLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    badCmdRow.appendChild(badCmdLabel);
+    modal.appendChild(badCmdRow);
+
+    // ── Section: Historie ──
+    var h5h = targetDoc.createElement('h5');
+    h5h.textContent = 'Historie';
+    modal.appendChild(h5h);
+
+    var histRow = targetDoc.createElement('div');
+    var histCheckbox = targetDoc.createElement('input');
+    histCheckbox.type = 'checkbox';
+    histCheckbox.id = 'xchat-history-toggle';
+    histCheckbox.checked = isHistoryEnabled();
+    histRow.appendChild(histCheckbox);
+    var histLabel = targetDoc.createElement('label');
+    histLabel.htmlFor = 'xchat-history-toggle';
+    histLabel.textContent = ' Ukl\u00e1dat lok\u00e1ln\u011b historii';
+    histLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    histRow.appendChild(histLabel);
+
+    var histDeleteBtn = targetDoc.createElement('button');
+    histDeleteBtn.type = 'button';
+    histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii';
+    histDeleteBtn.style.cssText = 'margin-left: 10px; font-size: 11px; cursor: pointer; color: #fff; background: #c00; border: 1px solid #900; border-radius: 3px; padding: 2px 8px;';
+    histDeleteBtn.addEventListener('click', function () {
+      if (confirm('Opravdu smazat ve\u0161kerou ulo\u017eenou historii?')) {
+        dbClearAll().then(function () {
+          histDeleteBtn.textContent = 'Smaz\u00e1no!';
+          setTimeout(function () { histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii'; }, 2000);
+        });
+      }
+    });
+    histRow.appendChild(histDeleteBtn);
+    modal.appendChild(histRow);
+
+    // ── Section: Obnovení skla ──
+    var h5r = targetDoc.createElement('h5');
+    h5r.textContent = 'Obnoven\u00ed skla';
+    modal.appendChild(h5r);
+
+    var refreshRow = targetDoc.createElement('div');
+    var refreshLabel = targetDoc.createElement('label');
+    refreshLabel.textContent = 'Interval: ';
+    refreshRow.appendChild(refreshLabel);
+
+    var sel = targetDoc.createElement('select');
+    var currentRefresh = getRefreshInterval();
+    var defaultOpt = targetDoc.createElement('option');
+    defaultOpt.value = '0';
+    defaultOpt.textContent = 'v\u00fdchoz\u00ed (server)';
+    if (!currentRefresh) defaultOpt.selected = true;
+    sel.appendChild(defaultOpt);
+    for (var r = 0; r < REFRESH_OPTIONS.length; r++) {
+      var opt = targetDoc.createElement('option');
+      opt.value = String(REFRESH_OPTIONS[r]);
+      opt.textContent = REFRESH_OPTIONS[r] + ' s';
+      if (currentRefresh === REFRESH_OPTIONS[r]) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    refreshRow.appendChild(sel);
+    modal.appendChild(refreshRow);
+
+    // ── Section: Tlačítka pozdravů ──
     var h5b = targetDoc.createElement('h5');
     h5b.textContent = 'Tla\u010d\u00edtka pozdrav\u016f';
     modal.appendChild(h5b);
@@ -1210,14 +1337,10 @@
     greetBtnRow.appendChild(greetBtnLabel);
     modal.appendChild(greetBtnRow);
 
-    // ── Greetings section ──
-    var h5g = targetDoc.createElement('h5');
-    h5g.textContent = 'Vlastn\u00ed pozdravy';
-    modal.appendChild(h5g);
-
     var allGreetings = getAllGreetings();
     var greetInputs = {};
     var greetingsContainer = targetDoc.createElement('div');
+    greetingsContainer.style.cssText = 'margin-top: 6px;';
 
     function renderGreetingRows() {
       greetingsContainer.innerHTML = '';
@@ -1307,101 +1430,12 @@
     var deleteAllBtn = targetDoc.createElement('button');
     deleteAllBtn.type = 'button';
     deleteAllBtn.textContent = 'Smazat v\u0161echny pozdravy';
-    deleteAllBtn.style.cssText = 'margin-top: 6px; font-size: 11px; cursor: pointer; color: #c00;';
+    deleteAllBtn.style.cssText = 'margin-top: 6px; font-size: 11px; cursor: pointer; color: #fff; background: #c00; border: 1px solid #900; border-radius: 3px; padding: 2px 8px;';
     deleteAllBtn.addEventListener('click', function () {
       allGreetings = {};
       renderGreetingRows();
     });
     modal.appendChild(deleteAllBtn);
-
-    // ── Hide bad commands toggle ──
-    var badCmdRow = targetDoc.createElement('div');
-    badCmdRow.style.cssText = 'margin-top: 6px;';
-    var badCmdCheckbox = targetDoc.createElement('input');
-    badCmdCheckbox.type = 'checkbox';
-    badCmdCheckbox.id = 'xchat-hide-badcmd-toggle';
-    badCmdCheckbox.checked = isHideBadCommands();
-    badCmdRow.appendChild(badCmdCheckbox);
-    var badCmdLabel = targetDoc.createElement('label');
-    badCmdLabel.htmlFor = 'xchat-hide-badcmd-toggle';
-    badCmdLabel.textContent = ' Skr\u00fdt nepoveden\u00e9 p\u0159\u00edkazy';
-    badCmdLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
-    badCmdRow.appendChild(badCmdLabel);
-    modal.appendChild(badCmdRow);
-
-    // ── Kick highlight toggle ──
-    var kickRow = targetDoc.createElement('div');
-    kickRow.style.cssText = 'margin-top: 6px;';
-    var kickCheckbox = targetDoc.createElement('input');
-    kickCheckbox.type = 'checkbox';
-    kickCheckbox.id = 'xchat-kick-highlight-toggle';
-    kickCheckbox.checked = isKickHighlightOn();
-    kickRow.appendChild(kickCheckbox);
-    var kickLabel = targetDoc.createElement('label');
-    kickLabel.htmlFor = 'xchat-kick-highlight-toggle';
-    kickLabel.textContent = ' Zv\u00fdraznit kicky \u010derven\u011b';
-    kickLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
-    kickRow.appendChild(kickLabel);
-    modal.appendChild(kickRow);
-
-    // ── History toggle ──
-    var h5h = targetDoc.createElement('h5');
-    h5h.textContent = 'Historie';
-    modal.appendChild(h5h);
-
-    var histRow = targetDoc.createElement('div');
-    var histCheckbox = targetDoc.createElement('input');
-    histCheckbox.type = 'checkbox';
-    histCheckbox.id = 'xchat-history-toggle';
-    histCheckbox.checked = isHistoryEnabled();
-    histRow.appendChild(histCheckbox);
-    var histLabel = targetDoc.createElement('label');
-    histLabel.htmlFor = 'xchat-history-toggle';
-    histLabel.textContent = ' Ukl\u00e1dat lok\u00e1ln\u011b historii';
-    histLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
-    histRow.appendChild(histLabel);
-
-    var histDeleteBtn = targetDoc.createElement('button');
-    histDeleteBtn.type = 'button';
-    histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii';
-    histDeleteBtn.style.cssText = 'margin-left: 10px; font-size: 11px; cursor: pointer; color: #fff; background: #c00; border: 1px solid #900; border-radius: 3px; padding: 2px 8px;';
-    histDeleteBtn.addEventListener('click', function () {
-      if (confirm('Opravdu smazat ve\u0161kerou ulo\u017eenou historii?')) {
-        dbClearAll().then(function () {
-          histDeleteBtn.textContent = 'Smaz\u00e1no!';
-          setTimeout(function () { histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii'; }, 2000);
-        });
-      }
-    });
-    histRow.appendChild(histDeleteBtn);
-    modal.appendChild(histRow);
-
-    // ── Refresh section ──
-    var h5r = targetDoc.createElement('h5');
-    h5r.textContent = 'Obnoven\u00ed skla';
-    modal.appendChild(h5r);
-
-    var refreshRow = targetDoc.createElement('div');
-    var refreshLabel = targetDoc.createElement('label');
-    refreshLabel.textContent = 'Interval: ';
-    refreshRow.appendChild(refreshLabel);
-
-    var sel = targetDoc.createElement('select');
-    var currentRefresh = getRefreshInterval();
-    var defaultOpt = targetDoc.createElement('option');
-    defaultOpt.value = '0';
-    defaultOpt.textContent = 'v\u00fdchoz\u00ed (server)';
-    if (!currentRefresh) defaultOpt.selected = true;
-    sel.appendChild(defaultOpt);
-    for (var r = 0; r < REFRESH_OPTIONS.length; r++) {
-      var opt = targetDoc.createElement('option');
-      opt.value = String(REFRESH_OPTIONS[r]);
-      opt.textContent = REFRESH_OPTIONS[r] + ' s';
-      if (currentRefresh === REFRESH_OPTIONS[r]) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    refreshRow.appendChild(sel);
-    modal.appendChild(refreshRow);
 
     // ── Buttons ──
     var btns = targetDoc.createElement('div');
@@ -1429,23 +1463,31 @@
       s.kickHighlight = kickCheckbox.checked;
       s.hideBadCommands = badCmdCheckbox.checked;
       s.historyEnabled = histCheckbox.checked;
-      s.highlight = getSetting('highlight', false);
+      s.highlight = hlCheckbox.checked;
+      s.showRid = ridCheckbox.checked;
       s.refreshInterval = parseInt(sel.value, 10) || 0;
       saveSettings(s);
 
       // Apply CSS changes
       applyKickHighlight(kickCheckbox.checked);
       applyHideBadCommands(badCmdCheckbox.checked);
+      applyHighlight(hlCheckbox.checked);
 
       overlay.remove();
       // Restart countdown in infopage
       try {
         setupCountdown();
       } catch {}
+      // Sync highlight toggle on infopage
+      try {
+        if (typeof window.top._xchatRenderHighlightLinks === 'function') {
+          window.top._xchatRenderHighlightLinks();
+        }
+      } catch {}
     });
 
-    btns.appendChild(cancelBtn);
     btns.appendChild(saveBtn);
+    btns.appendChild(cancelBtn);
     modal.appendChild(btns);
     overlay.appendChild(modal);
 
