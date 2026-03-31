@@ -629,7 +629,7 @@
 
     var filters = [
       { id: 'all', label: 'vše' },
-      { id: 'room', label: 'texty v místnosti' },
+      { id: 'room', label: 'místnost' },
       { id: 'whisper', label: 'pouze šeptání' }
     ];
 
