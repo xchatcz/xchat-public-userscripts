@@ -16,6 +16,13 @@
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
   try { document.domain = 'xchat.cz'; } catch {}
 
+  // ── Konfigurace ──
+  var CONFIG = {
+    greetings: {
+      // 'nick': 'vlastní pozdrav'
+    }
+  };
+
   const ENTRY_RE = /(?:Uživatel(?:ka)?)\s+(\S+)\s+vstoupil[a]?\s+do\s+místnosti/;
   const STORAGE_KEY = 'xchat_greetings';
   const FILTER_STYLE_ID = 'xchat-board-filter';
@@ -58,7 +65,7 @@
   }
 
   function getCustomGreeting(nick) {
-    return getGreetings()[nick] || '';
+    return getGreetings()[nick] || CONFIG.greetings[nick] || '';
   }
 
   function setCustomGreeting(nick, text) {
