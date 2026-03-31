@@ -27,6 +27,8 @@
   const STORAGE_KEY = 'xchat_greetings';
   const FILTER_STYLE_ID = 'xchat-board-filter';
   const HIGHLIGHT_STYLE_ID = 'xchat-board-highlight';
+  const KICK_HIGHLIGHT_STYLE_ID = 'xchat-board-kick-highlight';
+  var KICK_HIGHLIGHT_CSS = '.systemtext:has(.system.kicked), .systemtext:has(.system.killed) { background: #fcc !important; color: #900 !important; }';
   const REFRESH_KEY = 'xchat_refresh_interval';
   var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
 
@@ -83,6 +85,12 @@
 
   function areGreetButtonsEnabled() {
     try { return localStorage.getItem(GREET_BUTTONS_KEY) !== '0'; } catch { return true; }
+  }
+
+  var KICK_HIGHLIGHT_KEY = 'xchat_kick_highlight';
+
+  function isKickHighlightOn() {
+    try { return localStorage.getItem(KICK_HIGHLIGHT_KEY) === '1'; } catch { return false; }
   }
 
   function getRefreshInterval() {
@@ -574,6 +582,26 @@
     if (isHighlightOn()) applyHighlight(true);
   }
 
+  function applyKickHighlight(on) {
+    try { localStorage.setItem(KICK_HIGHLIGHT_KEY, on ? '1' : '0'); } catch {}
+    var startDoc = findBoardDoc();
+    if (!startDoc) return;
+    var existing = startDoc.getElementById(KICK_HIGHLIGHT_STYLE_ID);
+    if (!on) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
+    var style = startDoc.createElement('style');
+    style.id = KICK_HIGHLIGHT_STYLE_ID;
+    style.textContent = KICK_HIGHLIGHT_CSS;
+    startDoc.head.appendChild(style);
+  }
+
+  function restoreKickHighlight() {
+    if (isKickHighlightOn()) applyKickHighlight(true);
+  }
+
   // ── Infopage: filter links ──
 
   function initInfopage() {
@@ -879,6 +907,21 @@
     });
     modal.appendChild(deleteAllBtn);
 
+    // ── Kick highlight toggle ──
+    var kickRow = targetDoc.createElement('div');
+    kickRow.style.cssText = 'margin-top: 6px;';
+    var kickCheckbox = targetDoc.createElement('input');
+    kickCheckbox.type = 'checkbox';
+    kickCheckbox.id = 'xchat-kick-highlight-toggle';
+    kickCheckbox.checked = isKickHighlightOn();
+    kickRow.appendChild(kickCheckbox);
+    var kickLabel = targetDoc.createElement('label');
+    kickLabel.htmlFor = 'xchat-kick-highlight-toggle';
+    kickLabel.textContent = ' Zv\u00fdraznit kicky \u010derven\u011b';
+    kickLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    kickRow.appendChild(kickLabel);
+    modal.appendChild(kickRow);
+
     // ── Refresh section ──
     var h5r = targetDoc.createElement('h5');
     h5r.textContent = 'Obnoven\u00ed skla';
@@ -930,6 +973,9 @@
       // Save greet buttons toggle
       localStorage.setItem(GREET_BUTTONS_KEY, greetBtnCheckbox.checked ? '1' : '0');
 
+      // Save kick highlight
+      applyKickHighlight(kickCheckbox.checked);
+
       // Save refresh
       var newRefresh = parseInt(sel.value, 10) || 0;
       setRefreshInterval(newRefresh);
@@ -977,6 +1023,7 @@
     processAll();
     restoreBoardFilter();
     restoreHighlight();
+    restoreKickHighlight();
 
     const board = document.getElementById('board');
     if (!board) return;
