@@ -4,6 +4,7 @@
 // @version      1.1.0
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
+// @match        https://www.xchat.cz/*/modchat?op=infopage*
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
@@ -17,6 +18,11 @@
 
   const ENTRY_RE = /(?:Uživatel(?:ka)?)\s+(\S+)\s+vstoupil[a]?\s+do\s+místnosti/;
   const STORAGE_KEY = 'xchat_greetings';
+  const FILTER_STYLE_ID = 'xchat-board-filter';
+
+  function getOpParam() {
+    return new URLSearchParams(location.search).get('op') || '';
+  }
 
   function getSmileyUrl(id) {
     const bucket = id % 100;
@@ -398,9 +404,129 @@
     }
   }
 
-  function init() {
+  // ── Board filter (startframe side) ──
+
+  var WHISPER_HIDE = [
+    '#board > div:has(.umsg_whisper)',
+    '#board > div:has(.umsg_whisperi)',
+    '#board > div:has(.umsg_wcross)',
+    '#board > div:has(.umsg_wcrossi)'
+  ].join(', ');
+
+  var FILTER_CSS = {
+    all: '',
+    room: WHISPER_HIDE + ' { display: none !important; }',
+    whisper: '#board > div:not(:has(.umsg_whisper)):not(:has(.umsg_whisperi)):not(:has(.umsg_wcross)):not(:has(.umsg_wcrossi)) { display: none !important; }'
+  };
+
+  function findBoardDoc() {
+    function search(win) {
+      try {
+        if (win.document && win.document.getElementById('board')) return win.document;
+      } catch {}
+      try {
+        for (var i = 0; i < win.frames.length; i++) {
+          var result = search(win.frames[i]);
+          if (result) return result;
+        }
+      } catch {}
+      return null;
+    }
+    try { return search(window.top); } catch {}
+    return null;
+  }
+
+  function applyBoardFilter(mode) {
+    try { window.top._xchatBoardFilter = mode; } catch {}
+    var startDoc = findBoardDoc();
+    if (!startDoc) return;
+    var existing = startDoc.getElementById(FILTER_STYLE_ID);
+    if (!mode || mode === 'all') {
+      if (existing) existing.remove();
+      return;
+    }
+    var css = FILTER_CSS[mode] || '';
+    if (!css) return;
+    if (existing) {
+      existing.textContent = css;
+    } else {
+      var style = startDoc.createElement('style');
+      style.id = FILTER_STYLE_ID;
+      style.textContent = css;
+      startDoc.head.appendChild(style);
+    }
+  }
+
+  function restoreBoardFilter() {
+    try {
+      var mode = window.top._xchatBoardFilter;
+      if (mode && mode !== 'all') applyBoardFilter(mode);
+    } catch {}
+  }
+
+  // ── Infopage: filter links ──
+
+  function initInfopage() {
+    var links = document.querySelectorAll('a');
+    var historieLink = null;
+    for (var i = 0; i < links.length; i++) {
+      if (/historie/i.test(links[i].textContent)) {
+        historieLink = links[i];
+        break;
+      }
+    }
+    if (!historieLink) return;
+
+    var currentMode;
+    try { currentMode = window.top._xchatBoardFilter || 'all'; } catch { currentMode = 'all'; }
+
+    var filters = [
+      { id: 'all', label: 'vše' },
+      { id: 'room', label: 'texty v místnosti' },
+      { id: 'whisper', label: 'pouze šeptání' }
+    ];
+
+    var container = document.createElement('span');
+    container.id = 'xchat-filter-links';
+
+    var sep = document.createTextNode(' \u2013 ');
+    container.appendChild(sep);
+
+    function renderFilterLinks() {
+      while (container.childNodes.length > 1) container.removeChild(container.lastChild);
+      for (var i = 0; i < filters.length; i++) {
+        if (i > 0) container.appendChild(document.createTextNode(' | '));
+        var f = filters[i];
+        if (f.id === currentMode) {
+          var b = document.createElement('b');
+          b.textContent = f.label;
+          container.appendChild(b);
+        } else {
+          var a = document.createElement('a');
+          a.href = '#';
+          a.textContent = f.label;
+          a.dataset.filterMode = f.id;
+          a.addEventListener('click', function (e) {
+            e.preventDefault();
+            currentMode = this.dataset.filterMode;
+            applyBoardFilter(currentMode);
+            renderFilterLinks();
+          });
+          container.appendChild(a);
+        }
+      }
+    }
+
+    renderFilterLinks();
+    historieLink.parentNode.insertBefore(container, historieLink.nextSibling);
+  }
+
+  // ── Startframe: greet buttons + board ──
+
+  function initStartframe() {
     injectStyles();
     processAll();
+    restoreBoardFilter();
 
     const board = document.getElementById('board');
     if (!board) return;
@@ -418,9 +544,17 @@
     observer.observe(board, { childList: true });
   }
 
+  // ── Boot ──
+
+  function boot() {
+    var op = getOpParam();
+    if (op === 'startframe') initStartframe();
+    else if (op === 'infopage') initInfopage();
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', boot);
   } else {
-    init();
+    boot();
   }
 })();
