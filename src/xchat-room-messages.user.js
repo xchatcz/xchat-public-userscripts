@@ -79,6 +79,12 @@
     return merged;
   }
 
+  var GREET_BUTTONS_KEY = 'xchat_greet_buttons';
+
+  function areGreetButtonsEnabled() {
+    try { return localStorage.getItem(GREET_BUTTONS_KEY) !== '0'; } catch { return true; }
+  }
+
   function getRefreshInterval() {
     try { var v = parseInt(localStorage.getItem(REFRESH_KEY), 10); return v > 0 ? v : 0; } catch { return 0; }
   }
@@ -403,6 +409,8 @@
   function processEntryDiv(div) {
     if (div.dataset.xchatGreetProcessed) return;
     div.dataset.xchatGreetProcessed = '1';
+
+    if (!areGreetButtonsEnabled()) return;
 
     const span = div.querySelector('span.umsg_wsystem');
     if (!span) return;
@@ -744,6 +752,24 @@
     h4.textContent = 'Nastaven\u00ed';
     modal.appendChild(h4);
 
+    // ── Greet buttons toggle ──
+    var h5b = targetDoc.createElement('h5');
+    h5b.textContent = 'Tla\u010d\u00edtka pozdrav\u016f';
+    modal.appendChild(h5b);
+
+    var greetBtnRow = targetDoc.createElement('div');
+    var greetBtnCheckbox = targetDoc.createElement('input');
+    greetBtnCheckbox.type = 'checkbox';
+    greetBtnCheckbox.id = 'xchat-greet-btn-toggle';
+    greetBtnCheckbox.checked = areGreetButtonsEnabled();
+    greetBtnRow.appendChild(greetBtnCheckbox);
+    var greetBtnLabel = targetDoc.createElement('label');
+    greetBtnLabel.htmlFor = 'xchat-greet-btn-toggle';
+    greetBtnLabel.textContent = ' Zobrazovat tla\u010d\u00edtka pro pozdravy na skle';
+    greetBtnLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    greetBtnRow.appendChild(greetBtnLabel);
+    modal.appendChild(greetBtnRow);
+
     // ── Greetings section ──
     var h5g = targetDoc.createElement('h5');
     h5g.textContent = 'Vlastn\u00ed pozdravy';
@@ -858,6 +884,9 @@
         if (val) newData[nick] = val;
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
+
+      // Save greet buttons toggle
+      localStorage.setItem(GREET_BUTTONS_KEY, greetBtnCheckbox.checked ? '1' : '0');
 
       // Save refresh
       var newRefresh = parseInt(sel.value, 10) || 0;
