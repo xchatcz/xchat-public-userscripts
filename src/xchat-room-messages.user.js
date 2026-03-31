@@ -116,11 +116,23 @@
     document.body.appendChild(fakeForm);
     fakeForm.submit();
 
-    // Clean up after submission.
+    // Once the server responds, trigger a soft refresh of the message board
+    // (same mechanism as the "obnovit" link in infopage).
+    iframe.addEventListener('load', function () {
+      fakeForm.remove();
+      iframe.remove();
+      try {
+        if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
+          window.top.roomframe.dataframe.refresh();
+        }
+      } catch { /* cross-origin */ }
+    });
+
+    // Fallback cleanup if load never fires.
     setTimeout(function () {
       fakeForm.remove();
       iframe.remove();
-    }, 5000);
+    }, 10000);
   }
 
   function injectStyles() {
@@ -147,7 +159,7 @@
       '  box-sizing: border-box;',
       '}',
       '.xchat-greet-btn:hover { background: #ddd; }',
-      '.xchat-greet-btn img { vertical-align: middle; height: 12px; margin: 0 1px; }',
+      '.xchat-greet-btn img { vertical-align: middle; height: 12px; margin: 0 1px; margin-left: 2px; }',
       '.xchat-greet-settings {',
       '  margin-left: 6px;',
       '  border-color: #aaa;',
