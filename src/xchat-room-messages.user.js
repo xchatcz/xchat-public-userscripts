@@ -118,6 +118,10 @@
     return getSetting('refreshInterval', 0);
   }
 
+  function getWhisperMode() {
+    return getSetting('whisperMode', 'popup');
+  }
+
   function setCustomGreeting(nick, text) {
     var data = getGreetings();
     if (text) data[nick] = text;
@@ -940,6 +944,203 @@
     if (isHideBadCommands()) applyHideBadCommands(true);
   }
 
+  // ── Floating whisper windows ──
+
+  var floatingWindows = {}; // keyed by normalized nick
+
+  function getFloatingContainer() {
+    var c = document.getElementById('xchat-fw-container');
+    if (c) return c;
+    c = document.createElement('div');
+    c.id = 'xchat-fw-container';
+    c.className = 'xchat-fw-container';
+    document.body.appendChild(c);
+    return c;
+  }
+
+  function normNick(n) {
+    return n.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  }
+
+  function getRoomName() {
+    try {
+      var rooms = getSetting('rooms', {});
+      var rid = getRoomId();
+      if (rooms[rid]) return rooms[rid];
+    } catch {}
+    return '';
+  }
+
+  function openFloatingWhisper(nick) {
+    var key = normNick(nick);
+    // If already open, un-minimize and focus
+    if (floatingWindows[key]) {
+      var existing = floatingWindows[key];
+      existing.classList.remove('xchat-fw-minimized');
+      return;
+    }
+
+    var container = getFloatingContainer();
+
+    // Build whisper URL
+    var auth = '';
+    var rid = 0;
+    try { auth = window.top.my_auth || ''; } catch {}
+    try { rid = window.top.rid || 0; } catch {}
+    if (!auth) {
+      var m = location.pathname.match(/(\/~[^/]+\/)/);
+      if (m) auth = m[1].replace(/^\//, '').replace(/\/$/, '');
+    }
+    var proto = location.protocol;
+    var whisperUrl = proto + '//www.xchat.cz/' + auth + '/modchat?op=whisperingframeset&rid=' + rid + '&wfrom=' + encodeURIComponent(nick);
+
+    // Create floating window
+    var fw = document.createElement('div');
+    fw.className = 'xchat-fw';
+    fw.dataset.nick = key;
+
+    // Header
+    var header = document.createElement('div');
+    header.className = 'xchat-fw-header';
+
+    var info = document.createElement('div');
+    info.className = 'xchat-fw-header-info';
+
+    var nickEl = document.createElement('div');
+    nickEl.className = 'xchat-fw-nick';
+    nickEl.textContent = nick;
+    info.appendChild(nickEl);
+
+    var roomName = getRoomName();
+    if (roomName) {
+      var roomEl = document.createElement('div');
+      roomEl.className = 'xchat-fw-room';
+      roomEl.textContent = 'v m\u00edstnosti \u201e' + roomName + '\u201c';
+      info.appendChild(roomEl);
+    }
+
+    header.appendChild(info);
+
+    var btnsDiv = document.createElement('div');
+    btnsDiv.className = 'xchat-fw-header-btns';
+
+    // Minimize button
+    var minBtn = document.createElement('button');
+    minBtn.className = 'xchat-fw-header-btn';
+    minBtn.textContent = '\u2013';
+    minBtn.title = 'Minimalizovat';
+    minBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      fw.classList.toggle('xchat-fw-minimized');
+    });
+    btnsDiv.appendChild(minBtn);
+
+    // Popup button — open in classic popup
+    var popBtn = document.createElement('button');
+    popBtn.className = 'xchat-fw-header-btn';
+    popBtn.innerHTML = '&#8599;';
+    popBtn.title = 'Otev\u0159\u00edt ve vyskakovac\u00edm okn\u011b';
+    popBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      // Open in classic popup and close floating
+      try {
+        var uid = window.top.uid || '';
+        window.open(whisperUrl, uid + '_' + key, 'width=500,height=400,resizable=yes,scrolling=no,menubar=no,location=no,statusbar=no');
+      } catch {}
+      closeFloatingWhisper(key);
+    });
+    btnsDiv.appendChild(popBtn);
+
+    // Close button
+    var closeBtn = document.createElement('button');
+    closeBtn.className = 'xchat-fw-header-btn';
+    closeBtn.textContent = '\u00d7';
+    closeBtn.title = 'Zav\u0159\u00edt';
+    closeBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      closeFloatingWhisper(key);
+    });
+    btnsDiv.appendChild(closeBtn);
+
+    header.appendChild(btnsDiv);
+
+    // Click header to toggle minimize
+    header.addEventListener('click', function () {
+      fw.classList.toggle('xchat-fw-minimized');
+    });
+
+    fw.appendChild(header);
+
+    // Body with iframe
+    var body = document.createElement('div');
+    body.className = 'xchat-fw-body';
+
+    var iframe = document.createElement('iframe');
+    iframe.src = whisperUrl;
+    iframe.setAttribute('allow', 'autoplay');
+    body.appendChild(iframe);
+
+    fw.appendChild(body);
+
+    container.appendChild(fw);
+    floatingWindows[key] = fw;
+  }
+
+  function closeFloatingWhisper(key) {
+    if (floatingWindows[key]) {
+      floatingWindows[key].remove();
+      delete floatingWindows[key];
+    }
+  }
+
+  function installWhisperOverride() {
+    var wrapper = function (nick) { openFloatingWhisper(nick); };
+    wrapper._xchatFW = true;
+
+    // Collect all unique window objects to patch
+    var targets = [window];
+    try { if (window.parent !== window) targets.push(window.parent); } catch {}
+    try { if (window.top !== window && window.top !== window.parent) targets.push(window.top); } catch {}
+
+    for (var ti = 0; ti < targets.length; ti++) {
+      try { _patchWhisper(targets[ti], wrapper); } catch {}
+    }
+  }
+
+  function _patchWhisper(win, wrapper) {
+    if (getWhisperMode() === 'floating') {
+      // Save original if present and not our wrapper
+      var cur = null;
+      try { cur = win.whisper_to; } catch {}
+      if (typeof cur === 'function' && !cur._xchatFW) {
+        win._xchat_orig_whisper_to = cur;
+      }
+
+      // defineProperty trap — survives later reassignment by xchat scripts
+      try { delete win.whisper_to; } catch {}
+      Object.defineProperty(win, 'whisper_to', {
+        get: function () { return wrapper; },
+        set: function (fn) {
+          if (typeof fn === 'function' && !fn._xchatFW) {
+            win._xchat_orig_whisper_to = fn;
+          }
+        },
+        configurable: true,
+        enumerable: true
+      });
+    } else {
+      // Remove property trap if set
+      try {
+        var desc = Object.getOwnPropertyDescriptor(win, 'whisper_to');
+        if (desc && (desc.get || desc.set)) delete win.whisper_to;
+      } catch {}
+      // Restore original popup behavior
+      if (typeof win._xchat_orig_whisper_to === 'function') {
+        win.whisper_to = win._xchat_orig_whisper_to;
+      }
+    }
+  }
+
   // ── Infopage: filter links ──
 
   function initInfopage() {
@@ -1260,6 +1461,31 @@
     badCmdRow.appendChild(badCmdLabel);
     modal.appendChild(badCmdRow);
 
+    // Whisper mode dropdown
+    var whisperRow = targetDoc.createElement('div');
+    whisperRow.style.cssText = 'margin-top: 3px;';
+    var whisperLabel = targetDoc.createElement('label');
+    whisperLabel.htmlFor = 'xchat-whisper-mode';
+    whisperLabel.textContent = '\u0160ept\u00e1n\u00ed: ';
+    whisperLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    whisperRow.appendChild(whisperLabel);
+    var whisperSelect = targetDoc.createElement('select');
+    whisperSelect.id = 'xchat-whisper-mode';
+    whisperSelect.style.cssText = 'font-size: 11px;';
+    var wOpts = [
+      { value: 'popup', text: 'Vyskakovac\u00ed okna' },
+      { value: 'floating', text: 'Plovouc\u00ed okna' }
+    ];
+    for (var wi = 0; wi < wOpts.length; wi++) {
+      var wOpt = targetDoc.createElement('option');
+      wOpt.value = wOpts[wi].value;
+      wOpt.textContent = wOpts[wi].text;
+      whisperSelect.appendChild(wOpt);
+    }
+    whisperSelect.value = getWhisperMode();
+    whisperRow.appendChild(whisperSelect);
+    modal.appendChild(whisperRow);
+
     // ── Section: Historie ──
     var h5h = targetDoc.createElement('h5');
     h5h.textContent = 'Historie';
@@ -1465,6 +1691,7 @@
       s.historyEnabled = histCheckbox.checked;
       s.highlight = hlCheckbox.checked;
       s.showRid = ridCheckbox.checked;
+      s.whisperMode = whisperSelect.value;
       s.refreshInterval = parseInt(sel.value, 10) || 0;
       saveSettings(s);
 
@@ -1472,6 +1699,9 @@
       applyKickHighlight(kickCheckbox.checked);
       applyHideBadCommands(badCmdCheckbox.checked);
       applyHighlight(hlCheckbox.checked);
+
+      // Re-install or remove whisper override
+      try { installWhisperOverride(); } catch {}
 
       overlay.remove();
       // Restart countdown in infopage
@@ -1939,6 +2169,104 @@
 
   // ── Startframe: greet buttons + board ──
 
+  function injectFloatingStyles() {
+    if (document.getElementById('xchat-fw-styles')) return;
+    var style = document.createElement('style');
+    style.id = 'xchat-fw-styles';
+    style.textContent = [
+      '.xchat-fw-container {',
+      '  position: fixed;',
+      '  bottom: 0;',
+      '  right: 10px;',
+      '  display: flex;',
+      '  flex-direction: row-reverse;',
+      '  align-items: flex-end;',
+      '  gap: 6px;',
+      '  z-index: 99990;',
+      '  pointer-events: none;',
+      '}',
+      '.xchat-fw {',
+      '  pointer-events: auto;',
+      '  width: 340px;',
+      '  height: 400px;',
+      '  background: #fff;',
+      '  border: 1px solid #999;',
+      '  border-bottom: none;',
+      '  border-radius: 8px 8px 0 0;',
+      '  display: flex;',
+      '  flex-direction: column;',
+      '  box-shadow: 0 -2px 12px rgba(0,0,0,0.25);',
+      '  font-family: arial, sans-serif;',
+      '  overflow: hidden;',
+      '}',
+      '.xchat-fw.xchat-fw-minimized {',
+      '  height: auto;',
+      '}',
+      '.xchat-fw-header {',
+      '  background: #3b5998;',
+      '  color: #fff;',
+      '  padding: 6px 8px;',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: space-between;',
+      '  cursor: pointer;',
+      '  flex-shrink: 0;',
+      '  user-select: none;',
+      '}',
+      '.xchat-fw-header-info {',
+      '  overflow: hidden;',
+      '}',
+      '.xchat-fw-nick {',
+      '  font-size: 13px;',
+      '  font-weight: bold;',
+      '  white-space: nowrap;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '}',
+      '.xchat-fw-room {',
+      '  font-size: 10px;',
+      '  opacity: 0.8;',
+      '  white-space: nowrap;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '}',
+      '.xchat-fw-header-btns {',
+      '  display: flex;',
+      '  gap: 4px;',
+      '  flex-shrink: 0;',
+      '}',
+      '.xchat-fw-header-btn {',
+      '  background: none;',
+      '  border: none;',
+      '  color: #fff;',
+      '  font-size: 14px;',
+      '  cursor: pointer;',
+      '  padding: 0 3px;',
+      '  line-height: 1;',
+      '  opacity: 0.8;',
+      '}',
+      '.xchat-fw-header-btn:hover {',
+      '  opacity: 1;',
+      '}',
+      '.xchat-fw-body {',
+      '  flex: 1;',
+      '  position: relative;',
+      '  overflow: hidden;',
+      '}',
+      '.xchat-fw-body iframe {',
+      '  position: absolute;',
+      '  top: 0; left: 0;',
+      '  width: 100%;',
+      '  height: 100%;',
+      '  border: none;',
+      '}',
+      '.xchat-fw-minimized .xchat-fw-body {',
+      '  display: none;',
+      '}',
+    ].join('\n');
+    document.head.appendChild(style);
+  }
+
   function initStartframe() {
     injectStyles();
     captureAllDivs();
@@ -1952,8 +2280,25 @@
     var detectedNick = getMyNick();
     if (detectedNick) setSetting('myNick', detectedNick);
 
+    // Floating whisper windows
+    injectFloatingStyles();
+    installWhisperOverride();
+
     const board = document.getElementById('board');
     if (!board) return;
+
+    // Intercept clicks on whisper_to links — more reliable than overriding
+    // the function across frame boundaries
+    board.addEventListener('click', function (e) {
+      if (getWhisperMode() !== 'floating') return;
+      var link = e.target.closest('a[href*="whisper_to"]');
+      if (!link) return;
+      var m = (link.getAttribute('href') || '').match(/whisper_to\s*\(\s*['"]([^'"]+)['"]\s*\)/);
+      if (!m) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openFloatingWhisper(m[1]);
+    }, true);
 
     const observer = new MutationObserver(function (mutations) {
       for (const mut of mutations) {
