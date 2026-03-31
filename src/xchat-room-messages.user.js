@@ -1740,6 +1740,9 @@
     }
 
     function renderResults(results) {
+      results = results.filter(function (r) {
+        return !(r.message_type === 'system' && /\u0160patn\u00fd p\u0159\u00edkaz/.test(r.content_text));
+      });
       currentResults = results;
       resultsDiv.innerHTML = '';
       statusEl.textContent = 'Nalezeno: ' + results.length + ' zpr\u00e1v';
