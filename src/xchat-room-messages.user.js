@@ -5,6 +5,7 @@
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
+// @match        https://www.xchat.cz/*/history.html*
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
@@ -122,6 +123,261 @@
     if (text) data[nick] = text;
     else delete data[nick];
     setSetting('greetings', data);
+  }
+
+  // ── IndexedDB ──
+
+  var DB_NAME = 'xchat_room_messages';
+  var DB_VERSION = 1;
+  var STORE_NAME = 'messages';
+
+  function openDB() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = function (e) {
+        var db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          var store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+          store.createIndex('room_id', 'room_id', { unique: false });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+          store.createIndex('message_type', 'message_type', { unique: false });
+          store.createIndex('sender', 'sender', { unique: false });
+          store.createIndex('recipient', 'recipient', { unique: false });
+          store.createIndex('is_whisper', 'is_whisper', { unique: false });
+          store.createIndex('room_timestamp', ['room_id', 'timestamp'], { unique: false });
+        }
+      };
+      req.onsuccess = function (e) { resolve(e.target.result); };
+      req.onerror = function (e) { reject(e.target.error); };
+    });
+  }
+
+  function dbAdd(record) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_NAME, 'readwrite');
+        var store = tx.objectStore(STORE_NAME);
+        var req = store.add(record);
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+
+  function dbQuery(filters) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_NAME, 'readonly');
+        var store = tx.objectStore(STORE_NAME);
+        var results = [];
+        var cursorReq;
+
+        if (filters.room_id && filters.date_from) {
+          var idx = store.index('room_timestamp');
+          var lower = [filters.room_id, filters.date_from];
+          var upper = [filters.room_id, filters.date_to || new Date(9999, 0)];
+          cursorReq = idx.openCursor(IDBKeyRange.bound(lower, upper));
+        } else if (filters.room_id) {
+          var idx2 = store.index('room_id');
+          cursorReq = idx2.openCursor(IDBKeyRange.only(filters.room_id));
+        } else if (filters.date_from || filters.date_to) {
+          var idx3 = store.index('timestamp');
+          var lo = filters.date_from || new Date(0);
+          var hi = filters.date_to || new Date(9999, 0);
+          cursorReq = idx3.openCursor(IDBKeyRange.bound(lo, hi));
+        } else {
+          cursorReq = store.openCursor();
+        }
+
+        cursorReq.onsuccess = function (e) {
+          var cursor = e.target.result;
+          if (!cursor) { resolve(results); return; }
+          var rec = cursor.value;
+          var dominated = false;
+          if (filters.sender && rec.sender !== filters.sender) dominated = true;
+          if (filters.recipient && rec.recipient !== filters.recipient) dominated = true;
+          if (filters.message_type && rec.message_type !== filters.message_type) dominated = true;
+          if (typeof filters.is_whisper === 'boolean' && rec.is_whisper !== filters.is_whisper) dominated = true;
+          if (filters.content_search) {
+            var needle = filters.content_search.toLowerCase();
+            if ((rec.content_text || '').toLowerCase().indexOf(needle) === -1) dominated = true;
+          }
+          if (!dominated) results.push(rec);
+          cursor.continue();
+        };
+        cursorReq.onerror = function () { reject(cursorReq.error); };
+      });
+    });
+  }
+
+  function dbDeleteByIds(ids) {
+    if (!ids.length) return Promise.resolve();
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_NAME, 'readwrite');
+        var store = tx.objectStore(STORE_NAME);
+        var done = 0;
+        for (var i = 0; i < ids.length; i++) {
+          var req = store.delete(ids[i]);
+          req.onsuccess = function () { done++; if (done === ids.length) resolve(); };
+          req.onerror = function () { reject(req.error); };
+        }
+      });
+    });
+  }
+
+  function dbClearAll() {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(STORE_NAME, 'readwrite');
+        var store = tx.objectStore(STORE_NAME);
+        var req = store.clear();
+        req.onsuccess = function () { resolve(); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+
+  function isHistoryEnabled() {
+    return getSetting('historyEnabled', false);
+  }
+
+  // ── Message parsing ──
+
+  function getRoomId() {
+    try {
+      var path = window.top.location.pathname;
+      var m = path.match(/\/([^/]+)\/modchat/);
+      if (m) return m[1];
+    } catch {}
+    try {
+      var p2 = location.pathname;
+      var m2 = p2.match(/\/([^/]+)\/modchat/);
+      if (m2) return m2[1];
+    } catch {}
+    return 'unknown';
+  }
+
+  function parseBoardDiv(div) {
+    var timeEl = div.querySelector('.systemtime');
+    var timeStr = timeEl ? timeEl.textContent.trim() : '';
+
+    var now = new Date();
+    var parts = timeStr.split(':');
+    if (parts.length === 3) {
+      now.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10), 0);
+    }
+
+    var msgSpan = div.querySelector('.umsg_room, .umsg_roomi, .umsg_whisper, .umsg_whisperi, .umsg_wcross, .umsg_wcrossi, .umsg_wsystem, .umsg_advert');
+    if (!msgSpan) {
+      var sysText = div.querySelector('.systemtext');
+      if (sysText) {
+        return {
+          room_id: getRoomId(),
+          timestamp: now,
+          message_type: 'system',
+          sender: 'System',
+          recipient: '~',
+          content_html: sysText.innerHTML,
+          content_text: sysText.textContent.trim(),
+          is_whisper: false
+        };
+      }
+      return null;
+    }
+
+    var cls = msgSpan.className;
+    var message_type = 'room';
+    var is_whisper = false;
+
+    if (/umsg_whisper/.test(cls) || /umsg_wcross/.test(cls)) {
+      message_type = 'whisper';
+      is_whisper = true;
+    } else if (/umsg_wsystem/.test(cls)) {
+      message_type = 'system';
+    } else if (/umsg_advert/.test(cls)) {
+      message_type = 'advert';
+    }
+    if (/umsg_roomi|umsg_whisperi|umsg_wcrossi/.test(cls)) {
+      message_type += '_out';
+    }
+
+    var sender = '';
+    var recipient = '~';
+    var contentAfterBold = '';
+
+    var bold = msgSpan.querySelector('b');
+    if (bold) {
+      var boldText = bold.textContent.trim();
+      if (message_type === 'system' || message_type === 'system_out') {
+        var sysMatch = boldText.match(/^System->(.+?):$/);
+        if (sysMatch) {
+          sender = 'System';
+          recipient = sysMatch[1];
+        }
+      } else if (is_whisper) {
+        var wMatch = boldText.match(/^(.+?)->(.+?):$/);
+        if (wMatch) {
+          sender = wMatch[1];
+          recipient = wMatch[2];
+        }
+      } else {
+        sender = boldText.replace(/:$/, '');
+      }
+
+      var afterBold = '';
+      var n = bold.nextSibling;
+      while (n) { afterBold += (n.nodeType === Node.TEXT_NODE ? n.textContent : n.outerHTML || n.textContent); n = n.nextSibling; }
+      contentAfterBold = afterBold;
+    } else {
+      contentAfterBold = msgSpan.innerHTML;
+    }
+
+    var contentText = '';
+    if (bold) {
+      var tn = bold.nextSibling;
+      var txt = '';
+      while (tn) { txt += tn.textContent || ''; tn = tn.nextSibling; }
+      contentText = txt.trim();
+    } else {
+      contentText = msgSpan.textContent.trim();
+    }
+
+    return {
+      room_id: getRoomId(),
+      timestamp: now,
+      message_type: message_type,
+      sender: sender,
+      recipient: recipient,
+      content_html: contentAfterBold,
+      content_text: contentText,
+      is_whisper: is_whisper
+    };
+  }
+
+  var _capturedFingerprints = {};
+
+  function msgFingerprint(rec) {
+    return rec.room_id + '|' + rec.timestamp.getTime() + '|' + rec.sender + '|' + rec.recipient + '|' + rec.content_text;
+  }
+
+  function captureDiv(div) {
+    if (div.dataset.xchatHistCaptured) return;
+    div.dataset.xchatHistCaptured = '1';
+    if (!isHistoryEnabled()) return;
+    var rec = parseBoardDiv(div);
+    if (!rec) return;
+    var fp = msgFingerprint(rec);
+    if (_capturedFingerprints[fp]) return;
+    _capturedFingerprints[fp] = true;
+    dbAdd(rec).catch(function (err) { /* silent */ });
+  }
+
+  function captureAllDivs() {
+    var board = document.getElementById('board');
+    if (!board) return;
+    var divs = board.querySelectorAll(':scope > div');
+    for (var i = 0; i < divs.length; i++) captureDiv(divs[i]);
   }
 
   function findOriginalForm() {
@@ -1048,6 +1304,38 @@
     kickRow.appendChild(kickLabel);
     modal.appendChild(kickRow);
 
+    // ── History toggle ──
+    var h5h = targetDoc.createElement('h5');
+    h5h.textContent = 'Historie';
+    modal.appendChild(h5h);
+
+    var histRow = targetDoc.createElement('div');
+    var histCheckbox = targetDoc.createElement('input');
+    histCheckbox.type = 'checkbox';
+    histCheckbox.id = 'xchat-history-toggle';
+    histCheckbox.checked = isHistoryEnabled();
+    histRow.appendChild(histCheckbox);
+    var histLabel = targetDoc.createElement('label');
+    histLabel.htmlFor = 'xchat-history-toggle';
+    histLabel.textContent = ' Ukl\u00e1dat lok\u00e1ln\u011b historii';
+    histLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    histRow.appendChild(histLabel);
+
+    var histDeleteBtn = targetDoc.createElement('button');
+    histDeleteBtn.type = 'button';
+    histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii';
+    histDeleteBtn.style.cssText = 'margin-left: 10px; font-size: 11px; cursor: pointer; color: #fff; background: #c00; border: 1px solid #900; border-radius: 3px; padding: 2px 8px;';
+    histDeleteBtn.addEventListener('click', function () {
+      if (confirm('Opravdu smazat ve\u0161kerou ulo\u017eenou historii?')) {
+        dbClearAll().then(function () {
+          histDeleteBtn.textContent = 'Smaz\u00e1no!';
+          setTimeout(function () { histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii'; }, 2000);
+        });
+      }
+    });
+    histRow.appendChild(histDeleteBtn);
+    modal.appendChild(histRow);
+
     // ── Refresh section ──
     var h5r = targetDoc.createElement('h5');
     h5r.textContent = 'Obnoven\u00ed skla';
@@ -1100,6 +1388,7 @@
       s.greetButtons = greetBtnCheckbox.checked;
       s.kickHighlight = kickCheckbox.checked;
       s.hideBadCommands = badCmdCheckbox.checked;
+      s.historyEnabled = histCheckbox.checked;
       s.highlight = getSetting('highlight', false);
       s.refreshInterval = parseInt(sel.value, 10) || 0;
       saveSettings(s);
@@ -1144,6 +1433,368 @@
     }, sec * 1000);
   }
 
+  // ── History page ──
+
+  function getHistoryRoomId() {
+    try {
+      var path = window.top.location.pathname;
+      var m = path.match(/\/([^/]+)\/modchat/);
+      if (m) return m[1];
+    } catch {}
+    try {
+      var p = location.pathname;
+      var m2 = p.match(/\/([^/]+)\/history\.html/);
+      if (m2) return m2[1];
+    } catch {}
+    return '';
+  }
+
+  function formatTime(d) {
+    var h = String(d.getHours()).padStart(2, '0');
+    var m = String(d.getMinutes()).padStart(2, '0');
+    var s = String(d.getSeconds()).padStart(2, '0');
+    return h + ':' + m + ':' + s;
+  }
+
+  function formatDate(d) {
+    return d.getDate() + '.' + (d.getMonth() + 1) + '.' + d.getFullYear();
+  }
+
+  function formatDateTimeInput(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function msgTypeLabel(t) {
+    var map = {
+      room: 'M\u00edstnost', room_out: 'M\u00edstnost (odchoz\u00ed)',
+      whisper: '\u0160ept\u00e1n\u00ed', whisper_out: '\u0160ept\u00e1n\u00ed (odchoz\u00ed)',
+      system: 'Syst\u00e9m', system_out: 'Syst\u00e9m',
+      advert: 'Reklama'
+    };
+    return map[t] || t;
+  }
+
+  function htmlWithSmileys(html) {
+    return html.replace(/\*(\d+)\*/g, function (match, num) {
+      var id = parseInt(num, 10);
+      var bucket = id % 100;
+      return '<img class="smiley" src="https://x.ximg.cz/images/x4/sm/' + bucket + '/' + id + '.gif" alt="*' + id + '*" title="*' + id + '*">';
+    });
+  }
+
+  function recToPlaintext(rec, showDate) {
+    var ts = new Date(rec.timestamp);
+    var time = showDate ? formatDate(ts) + ' ' + formatTime(ts) : formatTime(ts);
+    var from = rec.sender || '?';
+    var to = rec.recipient || '~';
+    var arrow = rec.is_whisper ? '->' : ':';
+    var prefix = to === '~' ? from + ':' : from + '->' + to + ':';
+    return time + ' ' + prefix + ' ' + (rec.content_text || '');
+  }
+
+  function initHistoryPage() {
+    var defaultRoom = getHistoryRoomId();
+
+    document.title = 'Historie zpr\u00e1v';
+    document.body.innerHTML = '';
+    document.body.style.cssText = 'margin: 0; padding: 0; font-family: arial, helvetica, sans-serif; font-size: 12px; background: #f4f4f4; color: #333;';
+
+    var style = document.createElement('style');
+    style.textContent = [
+      '* { box-sizing: border-box; }',
+      '.hist-toolbar { background: #e8e8e8; border-bottom: 1px solid #ccc; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }',
+      '.hist-toolbar label { font-size: 11px; font-weight: bold; white-space: nowrap; }',
+      '.hist-toolbar input, .hist-toolbar select { font-size: 11px; padding: 2px 4px; border: 1px solid #aaa; border-radius: 3px; }',
+      '.hist-toolbar input[type="text"] { width: 100px; }',
+      '.hist-toolbar input[type="datetime-local"] { width: 160px; }',
+      '.hist-toolbar button { font-size: 11px; padding: 3px 10px; cursor: pointer; border: 1px solid #888; border-radius: 3px; background: #ddd; }',
+      '.hist-toolbar button:hover { background: #ccc; }',
+      '.hist-toolbar .hist-toggle { display: inline-flex; gap: 2px; }',
+      '.hist-toolbar .hist-toggle span { font-size: 11px; padding: 2px 6px; border: 1px solid #aaa; cursor: pointer; background: #fff; border-radius: 3px; }',
+      '.hist-toolbar .hist-toggle span.active { background: #4a90d9; color: #fff; border-color: #3a70b0; font-weight: bold; }',
+      '.hist-actions { background: #e8e8e8; border-bottom: 1px solid #ccc; padding: 6px 12px; display: flex; gap: 6px; align-items: center; }',
+      '.hist-actions button { font-size: 11px; padding: 3px 10px; cursor: pointer; border-radius: 3px; border: 1px solid #888; }',
+      '.hist-actions .btn-export { background: #4a90d9; color: #fff; border-color: #3a70b0; }',
+      '.hist-actions .btn-export:hover { background: #3a7bc8; }',
+      '.hist-actions .btn-delete { background: #c00; color: #fff; border-color: #900; }',
+      '.hist-actions .btn-delete:hover { background: #a00; }',
+      '.hist-actions .hist-status { font-size: 11px; color: #666; margin-left: auto; }',
+      '.hist-results { padding: 8px 12px; }',
+      '.hist-msg { padding: 2px 0; line-height: 1.5; }',
+      '.hist-msg .ht { color: #888; font-size: 11px; }',
+      '.hist-msg .hs { font-weight: bold; }',
+      '.hist-msg .hs-system { color: #666; }',
+      '.hist-msg .hs-whisper { color: #906; }',
+      '.hist-msg .hs-room { color: #006; }',
+      '.hist-msg .hs-advert { color: #999; }',
+      '.hist-msg .hc { }',
+      '.hist-msg .highlight { background: yellow; }',
+      '.hist-msg img.smiley { height: 15px; vertical-align: middle; }',
+      '.hist-empty { padding: 20px; text-align: center; color: #999; font-style: italic; }',
+    ].join('\n');
+    document.head.appendChild(style);
+
+    // ── Toolbar ──
+    var toolbar = document.createElement('div');
+    toolbar.className = 'hist-toolbar';
+
+    function makeField(labelText, el) {
+      var lbl = document.createElement('label');
+      lbl.textContent = labelText;
+      toolbar.appendChild(lbl);
+      toolbar.appendChild(el);
+      return el;
+    }
+
+    function makeToggle(labelText, options, defaultVal) {
+      var lbl = document.createElement('label');
+      lbl.textContent = labelText;
+      toolbar.appendChild(lbl);
+      var wrap = document.createElement('span');
+      wrap.className = 'hist-toggle';
+      var currentVal = defaultVal;
+      var spans = [];
+      for (var i = 0; i < options.length; i++) {
+        var sp = document.createElement('span');
+        sp.textContent = options[i].label;
+        sp.dataset.val = options[i].value;
+        if (options[i].value === defaultVal) sp.className = 'active';
+        sp.addEventListener('click', function () {
+          currentVal = this.dataset.val;
+          for (var j = 0; j < spans.length; j++) spans[j].className = spans[j].dataset.val === currentVal ? 'active' : '';
+        });
+        spans.push(sp);
+        wrap.appendChild(sp);
+      }
+      toolbar.appendChild(wrap);
+      return { get: function () { return currentVal; } };
+    }
+
+    var inpSender = document.createElement('input');
+    inpSender.type = 'text';
+    inpSender.placeholder = 'v\u0161e';
+    makeField('Odes\u00edlatel:', inpSender);
+
+    var inpRecipient = document.createElement('input');
+    inpRecipient.type = 'text';
+    inpRecipient.placeholder = 'v\u0161e';
+    makeField('P\u0159\u00edjemce:', inpRecipient);
+
+    var whisperToggle = makeToggle('\u0160ept\u00e1n\u00ed:', [
+      { label: 'V\u0161e', value: '' },
+      { label: 'Ano', value: 'yes' },
+      { label: 'Ne', value: 'no' }
+    ], '');
+
+    var selType = document.createElement('select');
+    var types = ['', 'room', 'room_out', 'whisper', 'whisper_out', 'system', 'advert'];
+    var typeLabels = ['V\u0161e', 'M\u00edstnost', 'M\u00edstnost (odchoz\u00ed)', '\u0160ept\u00e1n\u00ed', '\u0160ept\u00e1n\u00ed (odchoz\u00ed)', 'Syst\u00e9m', 'Reklama'];
+    for (var t = 0; t < types.length; t++) {
+      var o = document.createElement('option');
+      o.value = types[t];
+      o.textContent = typeLabels[t];
+      selType.appendChild(o);
+    }
+    makeField('Typ:', selType);
+
+    var inpContent = document.createElement('input');
+    inpContent.type = 'text';
+    inpContent.placeholder = 'hledat...';
+    makeField('Zpr\u00e1va:', inpContent);
+
+    var inpFrom = document.createElement('input');
+    inpFrom.type = 'datetime-local';
+    makeField('Od:', inpFrom);
+
+    var inpTo = document.createElement('input');
+    inpTo.type = 'datetime-local';
+    makeField('Do:', inpTo);
+
+    var inpRoom = document.createElement('input');
+    inpRoom.type = 'text';
+    inpRoom.value = defaultRoom;
+    inpRoom.style.width = '80px';
+    makeField('M\u00edstnost:', inpRoom);
+
+    var highlightToggle = makeToggle('Zv\u00fdraznit nick:', [
+      { label: 'Ne', value: 'no' },
+      { label: 'Ano', value: 'yes' }
+    ], 'no');
+
+    var dateToggle = makeToggle('Zobrazit datum:', [
+      { label: 'Ne', value: 'no' },
+      { label: 'Ano', value: 'yes' }
+    ], 'no');
+
+    var searchBtn = document.createElement('button');
+    searchBtn.textContent = 'Hledat';
+    searchBtn.style.cssText = 'background: #4a90d9; color: #fff; border-color: #3a70b0; font-weight: bold;';
+    toolbar.appendChild(searchBtn);
+
+    document.body.appendChild(toolbar);
+
+    // ── Actions bar ──
+    var actions = document.createElement('div');
+    actions.className = 'hist-actions';
+
+    var exportJsonBtn = document.createElement('button');
+    exportJsonBtn.className = 'btn-export';
+    exportJsonBtn.textContent = 'Exportovat do JSON';
+    actions.appendChild(exportJsonBtn);
+
+    var exportTextBtn = document.createElement('button');
+    exportTextBtn.className = 'btn-export';
+    exportTextBtn.textContent = 'Exportovat v plaintext';
+    actions.appendChild(exportTextBtn);
+
+    var deleteFilteredBtn = document.createElement('button');
+    deleteFilteredBtn.className = 'btn-delete';
+    deleteFilteredBtn.textContent = 'Smazat zobrazen\u00e9';
+    actions.appendChild(deleteFilteredBtn);
+
+    var statusEl = document.createElement('span');
+    statusEl.className = 'hist-status';
+    actions.appendChild(statusEl);
+
+    document.body.appendChild(actions);
+
+    // ── Results ──
+    var resultsDiv = document.createElement('div');
+    resultsDiv.className = 'hist-results';
+    document.body.appendChild(resultsDiv);
+
+    var currentResults = [];
+
+    function getFilters() {
+      var f = {};
+      if (inpRoom.value.trim()) f.room_id = inpRoom.value.trim();
+      if (inpSender.value.trim()) f.sender = inpSender.value.trim();
+      if (inpRecipient.value.trim()) f.recipient = inpRecipient.value.trim();
+      if (selType.value) f.message_type = selType.value;
+      var wv = whisperToggle.get();
+      if (wv === 'yes') f.is_whisper = true;
+      else if (wv === 'no') f.is_whisper = false;
+      if (inpContent.value.trim()) f.content_search = inpContent.value.trim();
+      if (inpFrom.value) f.date_from = new Date(inpFrom.value);
+      if (inpTo.value) f.date_to = new Date(inpTo.value);
+      return f;
+    }
+
+    function renderResults(results) {
+      currentResults = results;
+      resultsDiv.innerHTML = '';
+      statusEl.textContent = 'Nalezeno: ' + results.length + ' zpr\u00e1v';
+
+      if (results.length === 0) {
+        resultsDiv.innerHTML = '<div class="hist-empty">\u017d\u00e1dn\u00e9 zpr\u00e1vy nenalezeny.</div>';
+        return;
+      }
+
+      var showDate = dateToggle.get() === 'yes';
+      var doHighlight = highlightToggle.get() === 'yes';
+      var myNick = '';
+      if (doHighlight) {
+        try {
+          var bd = findBoardDoc();
+          if (bd) {
+            var el = bd.querySelector('.umsg_hmynicki');
+            if (el) myNick = el.textContent.trim();
+            if (!myNick) {
+              var mm = bd.querySelector('.umsg_roomi b');
+              if (mm) myNick = mm.textContent.trim().replace(/:$/, '');
+            }
+          }
+        } catch {}
+        if (!myNick && CONFIG.myNick) myNick = CONFIG.myNick;
+      }
+
+      var frag = document.createDocumentFragment();
+      for (var i = 0; i < results.length; i++) {
+        var rec = results[i];
+        var ts = new Date(rec.timestamp);
+        var row = document.createElement('div');
+        row.className = 'hist-msg';
+
+        var timeText = showDate ? formatDate(ts) + ' ' + formatTime(ts) : formatTime(ts);
+        var timeSpan = '<span class="ht">' + escapeHtml(timeText) + '</span> ';
+
+        var senderClass = 'hs';
+        if (rec.message_type === 'system' || rec.message_type === 'system_out') senderClass += ' hs-system';
+        else if (rec.is_whisper) senderClass += ' hs-whisper';
+        else if (rec.message_type === 'advert') senderClass += ' hs-advert';
+        else senderClass += ' hs-room';
+
+        var senderHtml;
+        if (rec.recipient && rec.recipient !== '~') {
+          senderHtml = '<span class="' + senderClass + '">' + escapeHtml(rec.sender) + '-&gt;' + escapeHtml(rec.recipient) + ':</span> ';
+        } else {
+          senderHtml = '<span class="' + senderClass + '">' + escapeHtml(rec.sender) + ':</span> ';
+        }
+
+        var contentHtml = htmlWithSmileys(escapeHtml(rec.content_text || ''));
+
+        if (doHighlight && myNick) {
+          var re = new RegExp('(' + myNick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+          contentHtml = contentHtml.replace(re, '<span class="highlight">$1</span>');
+        }
+
+        row.innerHTML = timeSpan + senderHtml + '<span class="hc">' + contentHtml + '</span>';
+        frag.appendChild(row);
+      }
+      resultsDiv.appendChild(frag);
+    }
+
+    function doSearch() {
+      statusEl.textContent = 'Na\u010d\u00edt\u00e1n\u00ed...';
+      resultsDiv.innerHTML = '';
+      var filters = getFilters();
+      dbQuery(filters).then(function (results) {
+        results.sort(function (a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+        renderResults(results);
+      }).catch(function (err) {
+        statusEl.textContent = 'Chyba: ' + err;
+      });
+    }
+
+    searchBtn.addEventListener('click', doSearch);
+
+    // ── Export JSON ──
+    exportJsonBtn.addEventListener('click', function () {
+      if (!currentResults.length) return;
+      var json = JSON.stringify(currentResults, null, 2);
+      navigator.clipboard.writeText(json).then(function () {
+        exportJsonBtn.textContent = 'Zkop\u00edrov\u00e1no!';
+        setTimeout(function () { exportJsonBtn.textContent = 'Exportovat do JSON'; }, 2000);
+      });
+    });
+
+    // ── Export plaintext ──
+    exportTextBtn.addEventListener('click', function () {
+      if (!currentResults.length) return;
+      var showDate = dateToggle.get() === 'yes';
+      var lines = currentResults.map(function (r) { return recToPlaintext(r, showDate); });
+      navigator.clipboard.writeText(lines.join('\n')).then(function () {
+        exportTextBtn.textContent = 'Zkop\u00edrov\u00e1no!';
+        setTimeout(function () { exportTextBtn.textContent = 'Exportovat v plaintext'; }, 2000);
+      });
+    });
+
+    // ── Delete filtered ──
+    deleteFilteredBtn.addEventListener('click', function () {
+      if (!currentResults.length) return;
+      if (!confirm('Opravdu smazat ' + currentResults.length + ' zobrazen\u00fdch zpr\u00e1v?')) return;
+      var ids = currentResults.map(function (r) { return r.id; });
+      dbDeleteByIds(ids).then(function () {
+        deleteFilteredBtn.textContent = 'Smaz\u00e1no!';
+        setTimeout(function () { deleteFilteredBtn.textContent = 'Smazat zobrazen\u00e9'; }, 2000);
+        doSearch();
+      });
+    });
+
+    // Auto-search on load
+    doSearch();
+  }
+
   // ── Startframe: greet buttons + board ──
 
   function initStartframe() {
@@ -1154,6 +1805,7 @@
     restoreKickHighlight();
     markAllBadCommands();
     restoreHideBadCommands();
+    captureAllDivs();
 
     const board = document.getElementById('board');
     if (!board) return;
@@ -1164,6 +1816,7 @@
           if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'DIV') {
             processEntryDiv(node);
             markBadCommandDiv(node);
+            captureDiv(node);
           }
         }
       }
@@ -1178,6 +1831,7 @@
     var op = getOpParam();
     if (op === 'startframe') initStartframe();
     else if (op === 'infopage') initInfopage();
+    else if (/history\.html/.test(location.pathname)) initHistoryPage();
   }
 
   if (document.readyState === 'loading') {
