@@ -27,6 +27,8 @@
   const STORAGE_KEY = 'xchat_greetings';
   const FILTER_STYLE_ID = 'xchat-board-filter';
   const HIGHLIGHT_STYLE_ID = 'xchat-board-highlight';
+  const REFRESH_KEY = 'xchat_refresh_interval';
+  var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
 
   var HIGHLIGHT_CSS = [
     '.umsg_room .umsg_hmynick',
@@ -66,6 +68,23 @@
 
   function getCustomGreeting(nick) {
     return getGreetings()[nick] || CONFIG.greetings[nick] || '';
+  }
+
+  function getAllGreetings() {
+    var merged = {};
+    var ck = CONFIG.greetings || {};
+    for (var k in ck) if (ck.hasOwnProperty(k)) merged[k] = ck[k];
+    var ls = getGreetings();
+    for (var k in ls) if (ls.hasOwnProperty(k)) merged[k] = ls[k];
+    return merged;
+  }
+
+  function getRefreshInterval() {
+    try { var v = parseInt(localStorage.getItem(REFRESH_KEY), 10); return v > 0 ? v : 0; } catch { return 0; }
+  }
+
+  function setRefreshInterval(sec) {
+    try { if (sec > 0) localStorage.setItem(REFRESH_KEY, String(sec)); else localStorage.removeItem(REFRESH_KEY); } catch {}
   }
 
   function setCustomGreeting(nick, text) {
@@ -599,6 +618,211 @@
 
     renderHighlightLinks();
     container.parentNode.insertBefore(hlContainer, container.nextSibling);
+
+    // ── Settings link ──
+
+    var settingsSpan = document.createElement('span');
+    settingsSpan.appendChild(document.createTextNode(' \u2013 '));
+    var settingsLink = document.createElement('a');
+    settingsLink.href = '#';
+    settingsLink.textContent = 'Nastaven\u00ed';
+    settingsLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      showSettingsModal();
+    });
+    settingsSpan.appendChild(settingsLink);
+    hlContainer.parentNode.insertBefore(settingsSpan, hlContainer.nextSibling);
+  }
+
+  // ── Settings modal (shown from infopage) ──
+
+  function showSettingsModal() {
+    var targetDoc = findBoardDoc() || document;
+    var existing = targetDoc.querySelector('.xchat-greet-modal-overlay');
+    if (existing) existing.remove();
+
+    // Inject modal styles into infopage if not present
+    if (!targetDoc.getElementById('xchat-settings-modal-styles')) {
+      var s = targetDoc.createElement('style');
+      s.id = 'xchat-settings-modal-styles';
+      s.textContent = [
+        '.xchat-greet-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 99999; display: flex; align-items: center; justify-content: center; }',
+        '.xchat-greet-modal { background: #fff; border: 1px solid #999; border-radius: 6px; padding: 12px 16px; min-width: 360px; max-height: 80vh; overflow-y: auto; font-family: arial, sans-serif; font-size: 12px; }',
+        '.xchat-greet-modal h4 { margin: 0 0 8px 0; font-size: 13px; }',
+        '.xchat-greet-modal h5 { margin: 10px 0 6px 0; font-size: 12px; border-top: 1px solid #ddd; padding-top: 8px; }',
+        '.xchat-greet-modal label { font-size: 11px; margin-right: 4px; }',
+        '.xchat-greet-modal input[type="text"] { width: 180px; padding: 2px 4px; font-size: 11px; margin-bottom: 4px; }',
+        '.xchat-greet-modal select { font-size: 11px; padding: 2px; }',
+        '.xchat-greet-modal-buttons { text-align: right; margin-top: 10px; }',
+        '.xchat-greet-modal-buttons button { margin-left: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer; }',
+        '.xchat-settings-row { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }',
+        '.xchat-settings-row .nick-label { font-weight: bold; min-width: 80px; font-size: 11px; }',
+        '.xchat-settings-delete { cursor: pointer; color: #c00; font-size: 13px; margin-left: 4px; }',
+      ].join('\n');
+      targetDoc.head.appendChild(s);
+    }
+
+    var overlay = targetDoc.createElement('div');
+    overlay.className = 'xchat-greet-modal-overlay';
+
+    var modal = targetDoc.createElement('div');
+    modal.className = 'xchat-greet-modal';
+
+    var h4 = targetDoc.createElement('h4');
+    h4.textContent = 'Nastaven\u00ed';
+    modal.appendChild(h4);
+
+    // ── Greetings section ──
+    var h5g = targetDoc.createElement('h5');
+    h5g.textContent = 'Vlastn\u00ed pozdravy';
+    modal.appendChild(h5g);
+
+    var allGreetings = getAllGreetings();
+    var greetInputs = {};
+    var greetingsContainer = targetDoc.createElement('div');
+
+    function renderGreetingRows() {
+      greetingsContainer.innerHTML = '';
+      greetInputs = {};
+      var nicks = Object.keys(allGreetings).sort();
+      if (nicks.length === 0) {
+        var p = targetDoc.createElement('p');
+        p.textContent = '(\u017e\u00e1dn\u00e9 pozdravy)';
+        p.style.cssText = 'color: #999; font-style: italic; margin: 4px 0;';
+        greetingsContainer.appendChild(p);
+        return;
+      }
+      for (var i = 0; i < nicks.length; i++) {
+        var nick = nicks[i];
+        var row = targetDoc.createElement('div');
+        row.className = 'xchat-settings-row';
+
+        var lbl = targetDoc.createElement('span');
+        lbl.className = 'nick-label';
+        lbl.textContent = nick + ':';
+        row.appendChild(lbl);
+
+        var inp = targetDoc.createElement('input');
+        inp.type = 'text';
+        inp.value = allGreetings[nick];
+        inp.maxLength = 200;
+        inp.dataset.nick = nick;
+        row.appendChild(inp);
+        greetInputs[nick] = inp;
+
+        var del = targetDoc.createElement('span');
+        del.className = 'xchat-settings-delete';
+        del.textContent = '\u00d7';
+        del.title = 'Smazat pozdrav pro ' + nick;
+        del.dataset.nick = nick;
+        del.addEventListener('click', function () {
+          var n = this.dataset.nick;
+          delete allGreetings[n];
+          renderGreetingRows();
+        });
+        row.appendChild(del);
+
+        greetingsContainer.appendChild(row);
+      }
+    }
+
+    renderGreetingRows();
+    modal.appendChild(greetingsContainer);
+
+    var deleteAllBtn = targetDoc.createElement('button');
+    deleteAllBtn.type = 'button';
+    deleteAllBtn.textContent = 'Smazat v\u0161echny pozdravy';
+    deleteAllBtn.style.cssText = 'margin-top: 6px; font-size: 11px; cursor: pointer; color: #c00;';
+    deleteAllBtn.addEventListener('click', function () {
+      allGreetings = {};
+      renderGreetingRows();
+    });
+    modal.appendChild(deleteAllBtn);
+
+    // ── Refresh section ──
+    var h5r = targetDoc.createElement('h5');
+    h5r.textContent = 'Obnoven\u00ed skla';
+    modal.appendChild(h5r);
+
+    var refreshRow = targetDoc.createElement('div');
+    var refreshLabel = targetDoc.createElement('label');
+    refreshLabel.textContent = 'Interval: ';
+    refreshRow.appendChild(refreshLabel);
+
+    var sel = targetDoc.createElement('select');
+    var currentRefresh = getRefreshInterval();
+    var defaultOpt = targetDoc.createElement('option');
+    defaultOpt.value = '0';
+    defaultOpt.textContent = 'v\u00fdchoz\u00ed (server)';
+    if (!currentRefresh) defaultOpt.selected = true;
+    sel.appendChild(defaultOpt);
+    for (var r = 0; r < REFRESH_OPTIONS.length; r++) {
+      var opt = targetDoc.createElement('option');
+      opt.value = String(REFRESH_OPTIONS[r]);
+      opt.textContent = REFRESH_OPTIONS[r] + ' s';
+      if (currentRefresh === REFRESH_OPTIONS[r]) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    refreshRow.appendChild(sel);
+    modal.appendChild(refreshRow);
+
+    // ── Buttons ──
+    var btns = targetDoc.createElement('div');
+    btns.className = 'xchat-greet-modal-buttons';
+
+    var cancelBtn = targetDoc.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Zru\u0161it';
+    cancelBtn.addEventListener('click', function () { overlay.remove(); });
+
+    var saveBtn = targetDoc.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.textContent = 'Ulo\u017eit';
+    saveBtn.addEventListener('click', function () {
+      // Save greetings
+      var newData = {};
+      for (var nick in greetInputs) {
+        var val = greetInputs[nick].value.trim();
+        if (val) newData[nick] = val;
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newData));
+
+      // Save refresh
+      var newRefresh = parseInt(sel.value, 10) || 0;
+      setRefreshInterval(newRefresh);
+
+      overlay.remove();
+      // Apply refresh immediately
+      startAutoRefresh();
+    });
+
+    btns.appendChild(cancelBtn);
+    btns.appendChild(saveBtn);
+    modal.appendChild(btns);
+    overlay.appendChild(modal);
+
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    targetDoc.body.appendChild(overlay);
+  }
+
+  // ── Auto-refresh ──
+
+  var autoRefreshTimer = null;
+
+  function startAutoRefresh() {
+    if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+    var sec = getRefreshInterval();
+    if (!sec) return;
+    autoRefreshTimer = setInterval(function () {
+      try {
+        if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
+          window.top.roomframe.dataframe.refresh();
+        }
+      } catch {}
+    }, sec * 1000);
   }
 
   // ── Startframe: greet buttons + board ──
@@ -608,6 +832,7 @@
     processAll();
     restoreBoardFilter();
     restoreHighlight();
+    startAutoRefresh();
 
     const board = document.getElementById('board');
     if (!board) return;
