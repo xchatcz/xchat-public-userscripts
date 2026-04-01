@@ -122,6 +122,10 @@
     return getSetting('whisperMode', 'popup');
   }
 
+  function getFwNewestFirst() {
+    return getSetting('fwNewestFirst', true);
+  }
+
   function setCustomGreeting(nick, text) {
     var data = getGreetings();
     if (text) data[nick] = text;
@@ -1157,9 +1161,14 @@
 
     header.appendChild(btnsDiv);
     header.addEventListener('click', function () {
+      var wasMinimized = fw.classList.contains('xchat-fw-minimized');
       fw.classList.toggle('xchat-fw-minimized');
       head.classList.toggle('xchat-fw-head-visible');
       saveFloatingState();
+      // Refresh messages when maximizing
+      if (wasMinimized && floatingWindows[key] && floatingWindows[key].fetchMessages) {
+        floatingWindows[key].fetchMessages();
+      }
     });
     fw.appendChild(header);
 
@@ -1208,6 +1217,10 @@
       fw.classList.remove('xchat-fw-minimized');
       head.classList.remove('xchat-fw-head-visible');
       saveFloatingState();
+      // Refresh messages when maximizing from head
+      if (floatingWindows[key] && floatingWindows[key].fetchMessages) {
+        floatingWindows[key].fetchMessages();
+      }
     });
 
     if (startMinimized) {
@@ -1226,80 +1239,163 @@
     fetch(framesetUrl, { credentials: 'include' })
       .then(function (r) { return r.text(); })
       .then(function (html) {
-        var parser = new DOMParser();
-        var fsDoc = parser.parseFromString(html, 'text/html');
-        var frames = fsDoc.querySelectorAll('frame');
-        var roomframeUrl = '';
+        // DOMParser discards <frame> tags, so parse with regex
+        var roomtopUrl = '';
         var textpageUrl = '';
         var userpageUrl = '';
-        for (var i = 0; i < frames.length; i++) {
-          var src = frames[i].getAttribute('src') || '';
-          var name = frames[i].getAttribute('name') || '';
-          if (name === 'roomframe' || /op=roomframeng/i.test(src)) roomframeUrl = src;
+        var frameRe = /<frame\b[^>]*>/gi;
+        var frameMatch;
+        while ((frameMatch = frameRe.exec(html)) !== null) {
+          var tag = frameMatch[0];
+          var srcM = tag.match(/\bsrc="([^"]*)"/i);
+          var nameM = tag.match(/\bname="([^"]*)"/i);
+          var src = srcM ? srcM[1] : '';
+          var name = nameM ? nameM[1] : '';
+          if (name === 'roomframe' || /op=room(top|frame)ng/i.test(src)) roomtopUrl = src;
           else if (name === 'textpage' || /op=textpageng/i.test(src)) textpageUrl = src;
           else if (name === 'userpage' || /op=whisperuserpage/i.test(src)) userpageUrl = src;
         }
 
+        // roomframe points to roomframeng (sub-frameset), we need roomtopng (actual content)
+        if (roomtopUrl) {
+          roomtopUrl = roomtopUrl.replace(/op=roomframeng/i, 'op=roomtopng');
+        }
+
         // Make URLs absolute
         var base = location.protocol + '//www.xchat.cz/';
-        if (roomframeUrl && !/^https?:/.test(roomframeUrl)) roomframeUrl = base + roomframeUrl.replace(/^\//, '');
+        if (roomtopUrl && !/^https?:/.test(roomtopUrl)) roomtopUrl = base + roomtopUrl.replace(/^\//, '');
         if (textpageUrl && !/^https?:/.test(textpageUrl)) textpageUrl = base + textpageUrl.replace(/^\//, '');
         if (userpageUrl && !/^https?:/.test(userpageUrl)) userpageUrl = base + userpageUrl.replace(/^\//, '');
 
-        // ── Load messages from roomframeng via fetch+parse ──
-        if (roomframeUrl) {
+        // Ensure js=0 in roomtop URL (no JS auto-refresh, plain HTML)
+        if (roomtopUrl) {
+          if (/[&?]js=\d+/.test(roomtopUrl)) {
+            roomtopUrl = roomtopUrl.replace(/([&?]js=)\d+/, '$10');
+          } else {
+            roomtopUrl += (roomtopUrl.indexOf('?') >= 0 ? '&' : '?') + 'js=0';
+          }
+        }
+
+        // ── Load messages from roomtopng via fetch+parse ──
+        if (roomtopUrl) {
           // Create message container
           var msgContainer = document.createElement('div');
           msgContainer.className = 'xchat-fw-messages';
           body.innerHTML = '';
           body.appendChild(msgContainer);
 
+          // Helper: create a DOM element for one message
+          var createMsgEl = function (msg) {
+            var msgEl = document.createElement('div');
+            msgEl.className = 'xchat-fw-msg ' + (msg.cls === 'umsg_whwi' ? 'xchat-fw-msg-mine' : 'xchat-fw-msg-theirs');
+            msgEl.dataset.key = msg.key;
+
+            var timeSpan = document.createElement('span');
+            timeSpan.className = 'xchat-fw-msg-time';
+            timeSpan.textContent = msg.time;
+            msgEl.appendChild(timeSpan);
+
+            var nickSpan = document.createElement('span');
+            nickSpan.className = 'xchat-fw-msg-nick';
+            nickSpan.style.color = msg.color;
+            nickSpan.textContent = msg.nick + ':';
+            msgEl.appendChild(nickSpan);
+
+            var textSpan = document.createElement('span');
+            textSpan.className = 'xchat-fw-msg-text';
+            // Preserve images (smileys) in text
+            var tmpDiv = document.createElement('div');
+            tmpDiv.innerHTML = msg.text;
+            while (tmpDiv.firstChild) textSpan.appendChild(tmpDiv.firstChild);
+            msgEl.appendChild(textSpan);
+
+            return msgEl;
+          };
+
+          // Build fetch URL with cache-busting fake= param
+          var buildFetchUrl = function () {
+            var url = roomtopUrl;
+            // Replace or add fake= timestamp
+            if (/[&?]fake=/.test(url)) {
+              url = url.replace(/([&?]fake=)\d+/, '$1' + Math.floor(Date.now() / 1000));
+            } else {
+              url += (url.indexOf('?') >= 0 ? '&' : '?') + 'fake=' + Math.floor(Date.now() / 1000);
+            }
+            return url;
+          };
+
           var fetchAndUpdateMessages = function () {
             if (!floatingWindows[key]) return; // window was closed
-            fetch(roomframeUrl, { credentials: 'include' })
+
+            fetch(buildFetchUrl(), {
+              method: 'GET',
+              credentials: 'include',
+              headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+              }
+            })
               .then(function (r2) { return r2.text(); })
               .then(function (rfHtml) {
                 if (!floatingWindows[key]) return;
-                var rfDoc = parser.parseFromString(rfHtml, 'text/html');
-                var rfBody = rfDoc.body;
-                if (!rfBody) return;
 
-                // Parse messages from the body HTML
-                // Each message line: "HH:MM:SS <font color="..."><span class="..."><b>Nick:</b> Text</span></font><br>"
-                var rawHtml = rfBody.innerHTML;
+                // The body contains nested <font> wrappers then messages separated by <br>
+                // Structure: <body ...><font face="..."><font size="2">
+                //   HH:MM:SS <font color="COLOR"><span class="umsg_whw|umsg_whwi"><b>Nick:</b> Text</span></font><br>
+                //   ...
+                // </font></font></body>
+                // We extract the inner HTML and split on <br>
+                var bodyMatch = rfHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+                if (!bodyMatch) return;
+                var bodyInner = bodyMatch[1];
+
+                // Strip outer <font> wrappers to get to message lines
+                // Remove <font face="..."> and <font size="..."> opening tags, and their closing </font>
+                var stripped = bodyInner
+                  .replace(/<font\s+face="[^"]*">/gi, '')
+                  .replace(/<font\s+size="[^"]*">/gi, '')
+                  .replace(/<\/font>/gi, '');
+
                 // Split on <br> to get individual message lines
-                var lines = rawHtml.split(/<br\s*\/?>/gi);
-                var newMsgs = [];
+                var lines = stripped.split(/<br\s*\/?>/gi);
+                var parsedMsgs = [];
 
                 for (var li = 0; li < lines.length; li++) {
                   var line = lines[li].trim();
                   if (!line) continue;
 
-                  // Parse time
+                  // Extract time at start
                   var timeMatch = line.match(/^(\d{1,2}:\d{2}:\d{2})\s*/);
                   if (!timeMatch) continue;
                   var time = timeMatch[1];
 
-                  // Parse the span with class (umsg_whw = their msg, umsg_whwi = my msg)
-                  var spanMatch = line.match(/<span\s+class="([^"]*)">([\s\S]*?)<\/span>/i);
-                  if (!spanMatch) continue;
-                  var msgClass = spanMatch[1]; // umsg_whw or umsg_whwi
-                  var spanContent = spanMatch[2];
-
-                  // Parse color from font tag
+                  // Extract color from <font color="...">
                   var colorMatch = line.match(/<font\s+color="([^"]*)"/i);
                   var color = colorMatch ? colorMatch[1] : '#282828';
 
-                  // Parse nick and text from span content: <b>Nick:</b> Text
+                  // Extract span class (umsg_whw = outgoing orange, umsg_whwi = incoming dark)
+                  var spanMatch = line.match(/<span\s+class="([^"]*)">/i);
+                  if (!spanMatch) continue;
+                  var msgClass = spanMatch[1];
+
+                  // Extract content inside <span ...>...</span>
+                  var spanContentMatch = line.match(/<span\s+class="[^"]*">([\s\S]*?)<\/span>/i);
+                  if (!spanContentMatch) continue;
+                  var spanContent = spanContentMatch[1];
+
+                  // Parse nick and text: <b>Nick:</b> Text
                   var nickTextMatch = spanContent.match(/<b>([^<]+):<\/b>\s*([\s\S]*)/i);
                   if (!nickTextMatch) continue;
                   var msgNick = nickTextMatch[1].trim();
                   var msgText = nickTextMatch[2].trim();
+                  // Remove trailing </font> that might remain
+                  msgText = msgText.replace(/<\/font>\s*$/i, '').trim();
 
-                  // Unique key to avoid duplicates
+                  // Unique key for deduplication
                   var msgKey = time + '|' + msgNick + '|' + msgText;
 
-                  newMsgs.push({
+                  parsedMsgs.push({
                     key: msgKey,
                     time: time,
                     nick: msgNick,
@@ -1309,44 +1405,41 @@
                   });
                 }
 
+                // Server sends newest-first; reverse to get chronological (oldest-first)
+                parsedMsgs.reverse();
+
                 var seenKeys = floatingWindows[key].seenMsgKeys;
-                var wasAtBottom = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 30;
-
-                // Messages from server come newest-first; we display oldest-first (top to bottom)
-                for (var mi = newMsgs.length - 1; mi >= 0; mi--) {
-                  var msg = newMsgs[mi];
-                  if (seenKeys[msg.key]) continue; // already in DOM
-                  seenKeys[msg.key] = true;
-
-                  var msgEl = document.createElement('div');
-                  msgEl.className = 'xchat-fw-msg ' + (msg.cls === 'umsg_whwi' ? 'xchat-fw-msg-mine' : 'xchat-fw-msg-theirs');
-
-                  var timeSpan = document.createElement('span');
-                  timeSpan.className = 'xchat-fw-msg-time';
-                  timeSpan.textContent = msg.time;
-                  msgEl.appendChild(timeSpan);
-
-                  var nickSpan = document.createElement('span');
-                  nickSpan.className = 'xchat-fw-msg-nick';
-                  nickSpan.style.color = msg.color;
-                  nickSpan.textContent = msg.nick + ':';
-                  msgEl.appendChild(nickSpan);
-
-                  var textSpan = document.createElement('span');
-                  textSpan.className = 'xchat-fw-msg-text';
-                  // Preserve images (smileys) in text
-                  var tmpDiv = document.createElement('div');
-                  tmpDiv.innerHTML = msg.text;
-                  while (tmpDiv.firstChild) textSpan.appendChild(tmpDiv.firstChild);
-                  msgEl.appendChild(textSpan);
-
-                  // Insert at end (oldest to newest, top to bottom)
-                  msgContainer.appendChild(msgEl);
+                var newestFirst = getFwNewestFirst();
+                var wasScrolled;
+                if (newestFirst) {
+                  wasScrolled = msgContainer.scrollTop < 30; // at top = auto-position
+                } else {
+                  wasScrolled = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 30;
                 }
 
-                // Auto-scroll to bottom if user was near bottom
-                if (wasAtBottom) {
-                  msgContainer.scrollTop = msgContainer.scrollHeight;
+                // Add only messages not already in DOM
+                for (var mi = 0; mi < parsedMsgs.length; mi++) {
+                  var msg = parsedMsgs[mi];
+                  if (seenKeys[msg.key]) continue;
+                  seenKeys[msg.key] = true;
+
+                  var msgEl = createMsgEl(msg);
+                  if (newestFirst) {
+                    // Newest on top: prepend (newest = last in chronological = appended last → prepend each)
+                    msgContainer.insertBefore(msgEl, msgContainer.firstChild);
+                  } else {
+                    // Newest on bottom: append
+                    msgContainer.appendChild(msgEl);
+                  }
+                }
+
+                // Auto-scroll
+                if (wasScrolled) {
+                  if (newestFirst) {
+                    msgContainer.scrollTop = 0;
+                  } else {
+                    msgContainer.scrollTop = msgContainer.scrollHeight;
+                  }
                 }
               })
               .catch(function () {});
@@ -1355,9 +1448,8 @@
           // Initial fetch
           fetchAndUpdateMessages();
 
-          // Periodic polling
-          var interval = getRefreshInterval() || 5;
-          var pollTimer = setInterval(fetchAndUpdateMessages, interval * 1000);
+          // Periodic polling (5 seconds)
+          var pollTimer = setInterval(fetchAndUpdateMessages, 5000);
           floatingWindows[key].pollTimer = pollTimer;
           floatingWindows[key].fetchMessages = fetchAndUpdateMessages;
         }
@@ -1368,7 +1460,7 @@
             .then(function (r3) { return r3.text(); })
             .then(function (tpHtml) {
               if (!floatingWindows[key]) return;
-              var tpDoc = parser.parseFromString(tpHtml, 'text/html');
+              var tpDoc = new DOMParser().parseFromString(tpHtml, 'text/html');
               var form = tpDoc.querySelector('form');
               if (!form) return;
               var action = form.getAttribute('action') || '';
@@ -1450,7 +1542,7 @@
           fetch(userpageUrl, { credentials: 'include' })
             .then(function (r2) { return r2.text(); })
             .then(function (upHtml) {
-              var upDoc = parser.parseFromString(upHtml, 'text/html');
+              var upDoc = new DOMParser().parseFromString(upHtml, 'text/html');
               var crdiv = upDoc.getElementById('crdiv1');
               if (!crdiv) return;
               var imgs = crdiv.querySelectorAll('img');
@@ -2049,6 +2141,21 @@
     whisperRow.appendChild(whisperSelect);
     modal.appendChild(whisperRow);
 
+    // Newest first toggle for floating whisper windows
+    var fwOrderRow = targetDoc.createElement('div');
+    fwOrderRow.style.cssText = 'margin-top: 3px;';
+    var fwOrderCheckbox = targetDoc.createElement('input');
+    fwOrderCheckbox.type = 'checkbox';
+    fwOrderCheckbox.id = 'xchat-fw-newest-first';
+    fwOrderCheckbox.checked = getFwNewestFirst();
+    fwOrderRow.appendChild(fwOrderCheckbox);
+    var fwOrderLabel = targetDoc.createElement('label');
+    fwOrderLabel.htmlFor = 'xchat-fw-newest-first';
+    fwOrderLabel.textContent = ' Nejnov\u011bj\u0161\u00ed \u0161epty naho\u0159e';
+    fwOrderLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    fwOrderRow.appendChild(fwOrderLabel);
+    modal.appendChild(fwOrderRow);
+
     // ── Section: Historie ──
     var h5h = targetDoc.createElement('h5');
     h5h.textContent = 'Historie';
@@ -2255,6 +2362,7 @@
       s.highlight = hlCheckbox.checked;
       s.showRid = ridCheckbox.checked;
       s.whisperMode = whisperSelect.value;
+      s.fwNewestFirst = fwOrderCheckbox.checked;
       s.refreshInterval = parseInt(sel.value, 10) || 0;
       saveSettings(s);
 
