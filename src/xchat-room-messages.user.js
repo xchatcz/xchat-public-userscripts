@@ -14,6 +14,101 @@
 (function () {
   'use strict';
 
+  // ── Network request logging (fetch + XMLHttpRequest) ──
+  (function installNetworkLogger() {
+    var LOG_PREFIX = '[xchat-net]';
+
+    function getCallerInfo() {
+      var stack = new Error().stack || '';
+      var lines = stack.split('\n');
+      // Skip Error, getCallerInfo, wrapper function — find actual caller
+      for (var i = 2; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line) continue;
+        // Skip this logger's own frames
+        if (line.indexOf('installNetworkLogger') !== -1) continue;
+        if (line.indexOf('getCallerInfo') !== -1) continue;
+        return line;
+      }
+      return '(unknown)';
+    }
+
+    // ── Patch fetch ──
+    var origFetch = window.fetch;
+    if (origFetch) {
+      window.fetch = function () {
+        var url = arguments[0];
+        var opts = arguments[1] || {};
+        var caller = getCallerInfo();
+        if (typeof url === 'object' && url.url) url = url.url; // Request object
+        console.log(LOG_PREFIX, 'fetch', opts.method || 'GET', String(url), '| caller:', caller);
+        var result = origFetch.apply(this, arguments);
+        result.then(function (resp) {
+          console.log(LOG_PREFIX, 'fetch DONE', resp.status, String(url));
+        }).catch(function (err) {
+          console.warn(LOG_PREFIX, 'fetch FAIL', String(url), err);
+        });
+        return result;
+      };
+    }
+
+    // ── Patch XMLHttpRequest ──
+    var origOpen = XMLHttpRequest.prototype.open;
+    var origSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function (method, url) {
+      this._xchatLogMethod = method;
+      this._xchatLogUrl = url;
+      this._xchatLogCaller = getCallerInfo();
+      return origOpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function () {
+      var xhr = this;
+      var method = xhr._xchatLogMethod || '?';
+      var url = xhr._xchatLogUrl || '?';
+      var caller = xhr._xchatLogCaller || getCallerInfo();
+      console.log(LOG_PREFIX, 'XHR', method, String(url), '| caller:', caller);
+      xhr.addEventListener('loadend', function () {
+        console.log(LOG_PREFIX, 'XHR DONE', xhr.status, method, String(url));
+      });
+      xhr.addEventListener('error', function () {
+        console.warn(LOG_PREFIX, 'XHR FAIL', method, String(url));
+      });
+      xhr.addEventListener('timeout', function () {
+        console.warn(LOG_PREFIX, 'XHR TIMEOUT', method, String(url));
+      });
+      return origSend.apply(this, arguments);
+    };
+
+    // ── Patch GM_xmlhttpRequest if available ──
+    if (typeof GM_xmlhttpRequest === 'function') {
+      var origGM = GM_xmlhttpRequest;
+      GM_xmlhttpRequest = function (details) {
+        var caller = getCallerInfo();
+        console.log(LOG_PREFIX, 'GM_XHR', details.method || 'GET', details.url, '| caller:', caller);
+        var origOnload = details.onload;
+        var origOnerror = details.onerror;
+        var origOntimeout = details.ontimeout;
+        details.onload = function (resp) {
+          console.log(LOG_PREFIX, 'GM_XHR DONE', resp.status, details.method || 'GET', details.url);
+          if (origOnload) origOnload(resp);
+        };
+        details.onerror = function (err) {
+          console.warn(LOG_PREFIX, 'GM_XHR FAIL', details.method || 'GET', details.url, err);
+          if (origOnerror) origOnerror(err);
+        };
+        details.ontimeout = function () {
+          console.warn(LOG_PREFIX, 'GM_XHR TIMEOUT', details.method || 'GET', details.url);
+          if (origOntimeout) origOntimeout();
+        };
+        return origGM(details);
+      };
+    }
+
+    console.log(LOG_PREFIX, 'Network logger installed (fetch + XHR + GM_XHR)');
+  })();
+
   // Must match the domain relaxation used by all xchat frames,
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
   try { document.domain = 'xchat.cz'; } catch {}
@@ -1082,6 +1177,10 @@
 
   var floatingWindows = {}; // keyed by normalized nick
   var _fwAutoOpenNoFocus = false; // temporary flag for auto-open without focus
+  var _fwPollStagger = 0; // incrementing stagger offset (ms) per window
+  var FW_POLL_ACTIVE = 5000;  // poll interval for visible windows (ms)
+  var FW_POLL_IDLE   = 30000; // poll interval for minimized windows (ms)
+  var FW_POLL_STAGGER = 1000; // stagger step between windows (ms)
   var FW_STATE_KEY = '_xchat_fw_state';
 
   function updateUnreadBadge(key, count) {
@@ -1190,6 +1289,10 @@
       for (var ki = 0; ki < keys.length; ki++) {
         if (floatingWindows[keys[ki]].el === toMinimize && floatingWindows[keys[ki]].head) {
           floatingWindows[keys[ki]].head.classList.add('xchat-fw-head-visible');
+          // Switch to idle poll frequency
+          if (floatingWindows[keys[ki]].startPoll) {
+            floatingWindows[keys[ki]].startPoll(FW_POLL_IDLE);
+          }
           break;
         }
       }
@@ -1338,6 +1441,8 @@
       var fwRef = floatingWindows[key];
       fwRef.el.classList.remove('xchat-fw-minimized');
       if (fwRef.head) fwRef.head.classList.remove('xchat-fw-head-visible');
+      // Switch to active poll frequency
+      if (fwRef.startPoll) fwRef.startPoll(FW_POLL_ACTIVE);
       // Clear unread badge and persist read keys
       updateUnreadBadge(key, 0);
       saveReadKeys(key, fwRef.seenMsgKeys);
@@ -1411,8 +1516,13 @@
     minBtn.title = 'Minimalizovat';
     minBtn.addEventListener('click', function (e) {
       e.stopPropagation();
+      var wasVisible = !fw.classList.contains('xchat-fw-minimized');
       fw.classList.toggle('xchat-fw-minimized');
       head.classList.toggle('xchat-fw-head-visible');
+      // Switch poll frequency: slow when minimized, fast when visible
+      if (floatingWindows[key] && floatingWindows[key].startPoll) {
+        floatingWindows[key].startPoll(wasVisible ? FW_POLL_IDLE : FW_POLL_ACTIVE);
+      }
       saveFloatingState();
     });
     btnsDiv.appendChild(minBtn);
@@ -1448,6 +1558,10 @@
       var wasMinimized = fw.classList.contains('xchat-fw-minimized');
       fw.classList.toggle('xchat-fw-minimized');
       head.classList.toggle('xchat-fw-head-visible');
+      // Switch poll frequency
+      if (floatingWindows[key] && floatingWindows[key].startPoll) {
+        floatingWindows[key].startPoll(wasMinimized ? FW_POLL_ACTIVE : FW_POLL_IDLE);
+      }
       // When un-minimizing, move to front of DOM = rightmost in row-reverse
       if (wasMinimized && fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
       // Clear unread badge when un-minimizing and persist read keys
@@ -1518,6 +1632,10 @@
     head.addEventListener('click', function () {
       fw.classList.remove('xchat-fw-minimized');
       head.classList.remove('xchat-fw-head-visible');
+      // Switch to active poll frequency
+      if (floatingWindows[key] && floatingWindows[key].startPoll) {
+        floatingWindows[key].startPoll(FW_POLL_ACTIVE);
+      }
       // Clear unread badge and persist read keys
       updateUnreadBadge(key, 0);
       if (floatingWindows[key]) saveReadKeys(key, floatingWindows[key].seenMsgKeys);
@@ -1984,17 +2102,36 @@
             });
           };
 
-          // Initial fetches
-          fetchAndUpdateMessages();
-          fetchAndUpdateRooms();
-
-          // Periodic polling (5 seconds)
+          // Poll function (used by interval and manual refresh)
           var pollInterval = function () {
             fetchAndUpdateMessages();
             fetchAndUpdateRooms();
           };
-          var pollTimer = setInterval(pollInterval, 5000);
-          floatingWindows[key].pollTimer = pollTimer;
+
+          // Helper to (re)start poll timer with given interval
+          var startPoll = function (interval) {
+            if (floatingWindows[key] && floatingWindows[key].pollTimer) {
+              clearInterval(floatingWindows[key].pollTimer);
+            }
+            var tid = setInterval(pollInterval, interval);
+            if (floatingWindows[key]) {
+              floatingWindows[key].pollTimer = tid;
+              floatingWindows[key].pollInterval = interval;
+            }
+          };
+
+          // Stagger initial fetch + interval start so windows don't all fire at once
+          var staggerDelay = _fwPollStagger;
+          _fwPollStagger += FW_POLL_STAGGER;
+          setTimeout(function () {
+            if (!floatingWindows[key]) return;
+            fetchAndUpdateMessages();
+            fetchAndUpdateRooms();
+            var interval = startMinimized ? FW_POLL_IDLE : FW_POLL_ACTIVE;
+            startPoll(interval);
+          }, staggerDelay);
+
+          floatingWindows[key].startPoll = startPoll;
           floatingWindows[key].fetchMessages = fetchAndUpdateMessages;
         }
 
