@@ -1235,6 +1235,16 @@
     var info = document.createElement('div');
     info.className = 'xchat-fw-header-info';
 
+    // Avatar thumbnail in header
+    var avatarImg = document.createElement('img');
+    avatarImg.className = 'xchat-fw-header-avatar';
+    avatarImg.src = 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
+    avatarImg.alt = nick;
+    info.appendChild(avatarImg);
+
+    var infoTexts = document.createElement('div');
+    infoTexts.className = 'xchat-fw-header-texts';
+
     var nickRow = document.createElement('div');
     nickRow.className = 'xchat-fw-nick-row';
 
@@ -1247,13 +1257,14 @@
     nickEl.textContent = nick;
     nickRow.appendChild(nickEl);
 
-    info.appendChild(nickRow);
+    infoTexts.appendChild(nickRow);
 
     var roomEl = document.createElement('div');
     roomEl.className = 'xchat-fw-room';
     roomEl.textContent = '';
-    info.appendChild(roomEl);
+    infoTexts.appendChild(roomEl);
 
+    info.appendChild(infoTexts);
     header.appendChild(info);
 
     var btnsDiv = document.createElement('div');
@@ -1377,14 +1388,10 @@
       head.classList.add('xchat-fw-head-visible');
     }
 
-    // Insert new window to the right (early in DOM = rightmost in row-reverse)
-    // but always after the launcher window which stays at position 0 (rightmost)
-    var launcherEl = container.querySelector('.xchat-fw-launcher-win');
-    if (launcherEl) {
-      container.insertBefore(fw, launcherEl.nextSibling);
-    } else {
-      container.insertBefore(fw, container.firstChild);
-    }
+    // Insert new window as first child = rightmost in row-reverse layout.
+    // The launcher (if open) will always re-insert itself as firstChild when toggled,
+    // so new whisper windows appear to the right of all older whisper windows.
+    container.insertBefore(fw, container.firstChild);
     getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
@@ -1772,22 +1779,26 @@
                 });
                 var dot = document.createElement('span');
                 dot.className = 'xchat-fw-status-dot xchat-fw-status-online';
-                dot.textContent = '\u25CF ';
+                dot.textContent = '\u25CF';
                 roomEl.appendChild(dot);
-                var roomNames = [];
                 for (var ri = 0; ri < sortedRooms.length; ri++) {
-                  roomNames.push(sortedRooms[ri].name);
+                  if (ri > 0) {
+                    var sep = document.createTextNode(', ');
+                    roomEl.appendChild(sep);
+                  }
+                  var roomLink = document.createElement('a');
+                  roomLink.className = 'xchat-fw-room-link';
+                  roomLink.href = buildRoomVisitUrl(sortedRooms[ri].rid);
+                  roomLink.target = '_blank';
+                  roomLink.textContent = sortedRooms[ri].name + ' (' + sortedRooms[ri].idle + ')';
+                  roomLink.title = sortedRooms[ri].name + ' \u2013 nemluvil ' + sortedRooms[ri].idle;
+                  roomLink.addEventListener('click', function (e) { e.stopPropagation(); });
+                  roomEl.appendChild(roomLink);
                 }
-                var fullText = roomNames.join(', ');
-                var roomsTextEl = document.createElement('span');
-                roomsTextEl.className = 'xchat-fw-room-links';
-                roomsTextEl.textContent = fullText;
-                roomsTextEl.title = fullText;
-                roomEl.appendChild(roomsTextEl);
               } else {
                 var dot = document.createElement('span');
                 dot.className = 'xchat-fw-status-dot xchat-fw-status-offline';
-                dot.textContent = '\u25CF ';
+                dot.textContent = '\u25CF';
                 roomEl.appendChild(dot);
                 var offlineText = document.createElement('span');
                 offlineText.className = 'xchat-fw-status-offline-text';
@@ -1910,10 +1921,11 @@
               var imgs = crdiv.querySelectorAll('img');
               for (var ii = 0; ii < imgs.length; ii++) {
                 var src = imgs[ii].getAttribute('src') || '';
-                // Skip personal photos, smileys and pict_ icons
+                // Skip personal photos, smileys, pict_ icons and x0.gif
                 if (/images\/personal\//i.test(src)) continue;
                 if (/images\/x4\/sm\//i.test(src)) continue;
                 if (/\/pict_/i.test(src)) continue;
+                if (/\/x0\.gif/i.test(src)) continue;
                 var img = document.createElement('img');
                 img.src = src;
                 img.border = '0';
@@ -3351,9 +3363,24 @@
       '.xchat-fw-header-info {',
       '  overflow: hidden;',
       '  display: flex;',
+      '  flex-direction: row;',
+      '  align-items: center;',
+      '  gap: 6px;',
+      '  min-width: 0;',
+      '}',
+      '.xchat-fw-header-avatar {',
+      '  width: 28px;',
+      '  height: 28px;',
+      '  border-radius: 50%;',
+      '  object-fit: cover;',
+      '  flex-shrink: 0;',
+      '}',
+      '.xchat-fw-header-texts {',
+      '  display: flex;',
       '  flex-direction: column;',
       '  gap: 1px;',
       '  min-width: 0;',
+      '  overflow: hidden;',
       '}',
       '.xchat-fw-nick-row {',
       '  display: flex;',
@@ -3384,10 +3411,12 @@
       '  text-overflow: ellipsis;',
       '  display: flex;',
       '  align-items: center;',
-      '  gap: 2px;',
+      '  gap: 3px;',
+      '  line-height: 1;',
       '}',
       '.xchat-fw-status-dot {',
       '  font-size: 14px;',
+      '  line-height: 1;',
       '  flex-shrink: 0;',
       '}',
       '.xchat-fw-status-online {',
@@ -3407,6 +3436,14 @@
       '  overflow: hidden;',
       '  text-overflow: ellipsis;',
       '  white-space: nowrap;',
+      '}',
+      '.xchat-fw-room-link {',
+      '  color: #fff;',
+      '  text-decoration: none;',
+      '  cursor: pointer;',
+      '}',
+      '.xchat-fw-room-link:hover {',
+      '  text-decoration: underline;',
       '}',
       '.xchat-fw-load-more {',
       '  display: block;',
