@@ -1678,7 +1678,7 @@
                 var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
                 var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
                 var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
-                if (seenKeys[msgKey]) continue;
+                // Mark as seen for live-fetch dedup, but always display history messages
                 seenKeys[msgKey] = true;
                 var isMine = /_(out|i)$/.test(rec.message_type || '');
                 var msgEl = createMsgEl({
@@ -1742,7 +1742,7 @@
               var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
               var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
               var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
-              if (seenKeys[msgKey]) continue;
+              // Mark as seen for live-fetch dedup, but always display history messages
               seenKeys[msgKey] = true;
               var isMine = /_(out|i)$/.test(rec.message_type || '');
               var msgEl = createMsgEl({
