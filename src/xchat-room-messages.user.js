@@ -127,6 +127,19 @@
     return getSetting('fwNewestFirst', true);
   }
 
+  function getFwMaxMessages() {
+    var v = getSetting('fwMaxMessages', 100);
+    return Math.max(1, parseInt(v, 10) || 100);
+  }
+
+  function parseIdleToSeconds(idle) {
+    if (!idle) return 0;
+    var parts = idle.split(':');
+    if (parts.length === 3) return parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseInt(parts[2], 10);
+    if (parts.length === 2) return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+    return parseInt(parts[0], 10) || 0;
+  }
+
   function setCustomGreeting(nick, text) {
     var data = getGreetings();
     if (text) data[nick] = text;
@@ -1159,24 +1172,25 @@
     var info = document.createElement('div');
     info.className = 'xchat-fw-header-info';
 
+    var nickRow = document.createElement('div');
+    nickRow.className = 'xchat-fw-nick-row';
+
     var iconsSpan = document.createElement('span');
     iconsSpan.className = 'xchat-fw-icons';
-    info.appendChild(iconsSpan);
+    nickRow.appendChild(iconsSpan);
 
-    var texts = document.createElement('div');
-    texts.className = 'xchat-fw-texts';
-
-    var nickEl = document.createElement('div');
+    var nickEl = document.createElement('span');
     nickEl.className = 'xchat-fw-nick';
     nickEl.textContent = nick;
-    texts.appendChild(nickEl);
+    nickRow.appendChild(nickEl);
+
+    info.appendChild(nickRow);
 
     var roomEl = document.createElement('div');
     roomEl.className = 'xchat-fw-room';
     roomEl.textContent = '';
-    texts.appendChild(roomEl);
+    info.appendChild(roomEl);
 
-    info.appendChild(texts);
     header.appendChild(info);
 
     var btnsDiv = document.createElement('div');
@@ -1368,10 +1382,16 @@
           body.innerHTML = '';
           body.appendChild(msgContainer);
 
+          // Track how many history messages are displayed and total available
+          var historyDisplayed = 0;
+          var historyTotal = 0;
+          var allHistoryMsgs = [];
+          var loadMoreEl = null;
+
           // Helper: create a DOM element for one message
           var createMsgEl = function (msg) {
             var msgEl = document.createElement('div');
-            msgEl.className = 'xchat-fw-msg ' + (msg.cls === 'umsg_whwi' ? 'xchat-fw-msg-mine' : 'xchat-fw-msg-theirs');
+            msgEl.className = 'xchat-fw-msg ' + (msg.cls === 'umsg_whwi' || msg.cls === 'whisper_out' ? 'xchat-fw-msg-mine' : 'xchat-fw-msg-theirs');
             msgEl.dataset.key = msg.key;
 
             var timeSpan = document.createElement('span');
@@ -1396,6 +1416,151 @@
 
             return msgEl;
           };
+
+          // ── Load initial messages from IndexedDB history ──
+          var loadHistoryFromDB = function () {
+            var origNick = floatingWindows[key] ? floatingWindows[key].origNick : nick;
+            var normKey = normNick(origNick);
+            return dbQuery({ is_whisper: true }).then(function (results) {
+              // Filter to messages involving this nick (sender or recipient)
+              var relevant = results.filter(function (rec) {
+                return normNick(rec.sender) === normKey || normNick(rec.recipient) === normKey;
+              });
+              // Sort by timestamp ascending (oldest first)
+              relevant.sort(function (a, b) {
+                var ta = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+                var tb = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+                return ta - tb;
+              });
+              allHistoryMsgs = relevant;
+              historyTotal = relevant.length;
+              var maxMsgs = getFwMaxMessages();
+              // Show only last N messages
+              var startIdx = Math.max(0, relevant.length - maxMsgs);
+              historyDisplayed = relevant.length - startIdx;
+              var seenKeys = floatingWindows[key] ? floatingWindows[key].seenMsgKeys : {};
+              var newestFirst = getFwNewestFirst();
+
+              for (var i = startIdx; i < relevant.length; i++) {
+                var rec = relevant[i];
+                var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
+                var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
+                var dateStr = ('0' + ts.getDate()).slice(-2) + '.' + ('0' + (ts.getMonth() + 1)).slice(-2) + '.';
+                var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
+                if (seenKeys[msgKey]) continue;
+                seenKeys[msgKey] = true;
+                var isMine = /_(out|i)$/.test(rec.message_type || '');
+                var msgEl = createMsgEl({
+                  key: msgKey,
+                  time: dateStr + ' ' + timeStr,
+                  nick: rec.sender,
+                  text: rec.content_html || escapeHtml(rec.content_text || ''),
+                  color: isMine ? '#C87000' : '#282828',
+                  cls: isMine ? 'whisper_out' : 'whisper_in'
+                });
+                msgEl.classList.add('xchat-fw-msg-history');
+                if (newestFirst) {
+                  msgContainer.insertBefore(msgEl, msgContainer.firstChild);
+                } else {
+                  msgContainer.appendChild(msgEl);
+                }
+              }
+
+              // Add 'load more' link if there are more messages
+              if (startIdx > 0) {
+                addLoadMoreLink(startIdx);
+              }
+
+              // Scroll to correct position
+              if (newestFirst) {
+                msgContainer.scrollTop = 0;
+              } else {
+                msgContainer.scrollTop = msgContainer.scrollHeight;
+              }
+            }).catch(function () { /* IndexedDB may not be available */ });
+          };
+
+          var addLoadMoreLink = function (remainingCount) {
+            if (loadMoreEl) loadMoreEl.remove();
+            loadMoreEl = document.createElement('a');
+            loadMoreEl.className = 'xchat-fw-load-more';
+            loadMoreEl.textContent = 'Na\u010d\u00edst v\u00edce zpr\u00e1v (' + remainingCount + ')';
+            loadMoreEl.addEventListener('click', function (e) {
+              e.preventDefault();
+              loadMoreHistory();
+            });
+            var newestFirst = getFwNewestFirst();
+            if (newestFirst) {
+              msgContainer.appendChild(loadMoreEl);
+            } else {
+              msgContainer.insertBefore(loadMoreEl, msgContainer.firstChild);
+            }
+          };
+
+          var loadMoreHistory = function () {
+            if (!allHistoryMsgs.length) return;
+            var maxMsgs = getFwMaxMessages();
+            var currentStart = Math.max(0, allHistoryMsgs.length - historyDisplayed);
+            var newStart = Math.max(0, currentStart - maxMsgs);
+            var seenKeys = floatingWindows[key] ? floatingWindows[key].seenMsgKeys : {};
+            var newestFirst = getFwNewestFirst();
+            var fragment = document.createDocumentFragment();
+
+            for (var i = newStart; i < currentStart; i++) {
+              var rec = allHistoryMsgs[i];
+              var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
+              var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
+              var dateStr = ('0' + ts.getDate()).slice(-2) + '.' + ('0' + (ts.getMonth() + 1)).slice(-2) + '.';
+              var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
+              if (seenKeys[msgKey]) continue;
+              seenKeys[msgKey] = true;
+              var isMine = /_(out|i)$/.test(rec.message_type || '');
+              var msgEl = createMsgEl({
+                key: msgKey,
+                time: dateStr + ' ' + timeStr,
+                nick: rec.sender,
+                text: rec.content_html || escapeHtml(rec.content_text || ''),
+                color: isMine ? '#C87000' : '#282828',
+                cls: isMine ? 'whisper_out' : 'whisper_in'
+              });
+              msgEl.classList.add('xchat-fw-msg-history');
+              fragment.appendChild(msgEl);
+            }
+
+            historyDisplayed += (currentStart - newStart);
+
+            if (newestFirst) {
+              // Append older messages at the bottom (before load-more link)
+              if (loadMoreEl && loadMoreEl.parentNode) {
+                msgContainer.insertBefore(fragment, loadMoreEl);
+              } else {
+                msgContainer.appendChild(fragment);
+              }
+            } else {
+              // Prepend older messages at the top (after load-more link)
+              var prevHeight = msgContainer.scrollHeight;
+              if (loadMoreEl && loadMoreEl.nextSibling) {
+                msgContainer.insertBefore(fragment, loadMoreEl.nextSibling);
+              } else {
+                msgContainer.insertBefore(fragment, msgContainer.firstChild);
+              }
+              // Preserve scroll position
+              msgContainer.scrollTop += msgContainer.scrollHeight - prevHeight;
+            }
+
+            // Update or remove load-more link
+            if (newStart > 0) {
+              addLoadMoreLink(newStart);
+            } else if (loadMoreEl) {
+              loadMoreEl.remove();
+              loadMoreEl = null;
+            }
+          };
+
+          // Load history first, then start live polling
+          loadHistoryFromDB().then(function () {
+            // Mark history messages so live fetch can skip duplicates
+          });
 
           // Build fetch URL with cache-busting fake= param
           var buildFetchUrl = function () {
@@ -1538,22 +1703,24 @@
               if (!floatingWindows[key]) return;
               roomEl.innerHTML = '';
               if (result.online && result.rooms.length > 0) {
+                // Sort rooms by idle time ascending (least idle first)
+                var sortedRooms = result.rooms.slice().sort(function (a, b) {
+                  return parseIdleToSeconds(a.idle) - parseIdleToSeconds(b.idle);
+                });
                 var dot = document.createElement('span');
                 dot.className = 'xchat-fw-status-dot xchat-fw-status-online';
                 dot.textContent = '\u25CF ';
                 roomEl.appendChild(dot);
-                var prefix = document.createTextNode('v m\u00edstnosti: ');
-                roomEl.appendChild(prefix);
-                for (var ri = 0; ri < result.rooms.length; ri++) {
-                  if (ri > 0) roomEl.appendChild(document.createTextNode(', '));
-                  var room = result.rooms[ri];
-                  var roomLink = document.createElement('a');
-                  roomLink.href = buildRoomVisitUrl(room.rid);
-                  roomLink.target = '_blank';
-                  roomLink.className = 'xchat-fw-room-link';
-                  roomLink.textContent = room.name + ' (' + room.idle + ')';
-                  roomEl.appendChild(roomLink);
+                var roomNames = [];
+                for (var ri = 0; ri < sortedRooms.length; ri++) {
+                  roomNames.push(sortedRooms[ri].name);
                 }
+                var fullText = roomNames.join(', ');
+                var roomsTextEl = document.createElement('span');
+                roomsTextEl.className = 'xchat-fw-room-links';
+                roomsTextEl.textContent = fullText;
+                roomsTextEl.title = fullText;
+                roomEl.appendChild(roomsTextEl);
               } else {
                 var dot = document.createElement('span');
                 dot.className = 'xchat-fw-status-dot xchat-fw-status-offline';
@@ -1561,7 +1728,7 @@
                 roomEl.appendChild(dot);
                 var offlineText = document.createElement('span');
                 offlineText.className = 'xchat-fw-status-offline-text';
-                offlineText.textContent = 'U\u017eivatel je offline';
+                offlineText.textContent = 'offline';
                 roomEl.appendChild(offlineText);
               }
             });
@@ -2281,6 +2448,24 @@
     fwOrderRow.appendChild(fwOrderLabel);
     modal.appendChild(fwOrderRow);
 
+    // Max messages in floating whisper window
+    var fwMaxRow = targetDoc.createElement('div');
+    fwMaxRow.style.cssText = 'margin-top: 3px;';
+    var fwMaxLabel = targetDoc.createElement('label');
+    fwMaxLabel.htmlFor = 'xchat-fw-max-messages';
+    fwMaxLabel.textContent = 'Po\u010det zpr\u00e1v z historie: ';
+    fwMaxLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    fwMaxRow.appendChild(fwMaxLabel);
+    var fwMaxInput = targetDoc.createElement('input');
+    fwMaxInput.type = 'number';
+    fwMaxInput.id = 'xchat-fw-max-messages';
+    fwMaxInput.min = '1';
+    fwMaxInput.max = '10000';
+    fwMaxInput.value = String(getFwMaxMessages());
+    fwMaxInput.style.cssText = 'width: 60px; font-size: 11px;';
+    fwMaxRow.appendChild(fwMaxInput);
+    modal.appendChild(fwMaxRow);
+
     // ── Section: Historie ──
     var h5h = targetDoc.createElement('h5');
     h5h.textContent = 'Historie';
@@ -2488,6 +2673,7 @@
       s.showRid = ridCheckbox.checked;
       s.whisperMode = whisperSelect.value;
       s.fwNewestFirst = fwOrderCheckbox.checked;
+      s.fwMaxMessages = parseInt(fwMaxInput.value, 10) || 100;
       s.refreshInterval = parseInt(sel.value, 10) || 0;
       saveSettings(s);
 
@@ -3101,8 +3287,14 @@
       '.xchat-fw-header-info {',
       '  overflow: hidden;',
       '  display: flex;',
+      '  flex-direction: column;',
+      '  gap: 1px;',
+      '  min-width: 0;',
+      '}',
+      '.xchat-fw-nick-row {',
+      '  display: flex;',
       '  align-items: center;',
-      '  gap: 6px;',
+      '  gap: 4px;',
       '  min-width: 0;',
       '}',
       '.xchat-fw-icons {',
@@ -3114,9 +3306,6 @@
       '.xchat-fw-icons img {',
       '  vertical-align: middle;',
       '}',
-      '.xchat-fw-texts {',
-      '  min-width: 0;',
-      '}',
       '.xchat-fw-nick {',
       '  font-size: 13px;',
       '  font-weight: bold;',
@@ -3126,32 +3315,45 @@
       '}',
       '.xchat-fw-room {',
       '  font-size: 10px;',
-      '  opacity: 0.8;',
       '  white-space: nowrap;',
       '  overflow: hidden;',
       '  text-overflow: ellipsis;',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 2px;',
       '}',
       '.xchat-fw-status-dot {',
-      '  font-size: 10px;',
+      '  font-size: 14px;',
+      '  flex-shrink: 0;',
       '}',
       '.xchat-fw-status-online {',
-      '  color: #2a2;',
+      '  color: #0f0;',
+      '  text-shadow: 0 0 4px #0f0;',
       '}',
       '.xchat-fw-status-offline {',
-      '  color: #c00;',
+      '  color: #f33;',
+      '  text-shadow: 0 0 4px #f33;',
       '}',
       '.xchat-fw-status-offline-text {',
-      '  color: #c00;',
-      '  font-size: 11px;',
-      '  padding: 4px 8px;',
+      '  color: #f55;',
+      '  font-size: 10px;',
       '}',
-      '.xchat-fw-room-link {',
+      '.xchat-fw-room-links {',
       '  color: #fff;',
-      '  text-decoration: underline;',
-      '  cursor: pointer;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '  white-space: nowrap;',
       '}',
-      '.xchat-fw-room-link:hover {',
-      '  opacity: 0.8;',
+      '.xchat-fw-load-more {',
+      '  display: block;',
+      '  text-align: center;',
+      '  padding: 6px;',
+      '  color: #69f;',
+      '  cursor: pointer;',
+      '  font-size: 11px;',
+      '}',
+      '.xchat-fw-load-more:hover {',
+      '  text-decoration: underline;',
       '}',
       '.xchat-fw-header-btns {',
       '  display: flex;',
