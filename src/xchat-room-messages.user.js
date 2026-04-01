@@ -14,101 +14,6 @@
 (function () {
   'use strict';
 
-  // ── Network request logging (fetch + XMLHttpRequest) ──
-  (function installNetworkLogger() {
-    var LOG_PREFIX = '[xchat-net]';
-
-    function getCallerInfo() {
-      var stack = new Error().stack || '';
-      var lines = stack.split('\n');
-      // Skip Error, getCallerInfo, wrapper function — find actual caller
-      for (var i = 2; i < lines.length; i++) {
-        var line = lines[i].trim();
-        if (!line) continue;
-        // Skip this logger's own frames
-        if (line.indexOf('installNetworkLogger') !== -1) continue;
-        if (line.indexOf('getCallerInfo') !== -1) continue;
-        return line;
-      }
-      return '(unknown)';
-    }
-
-    // ── Patch fetch ──
-    var origFetch = window.fetch;
-    if (origFetch) {
-      window.fetch = function () {
-        var url = arguments[0];
-        var opts = arguments[1] || {};
-        var caller = getCallerInfo();
-        if (typeof url === 'object' && url.url) url = url.url; // Request object
-        console.log(LOG_PREFIX, 'fetch', opts.method || 'GET', String(url), '| caller:', caller);
-        var result = origFetch.apply(this, arguments);
-        result.then(function (resp) {
-          console.log(LOG_PREFIX, 'fetch DONE', resp.status, String(url));
-        }).catch(function (err) {
-          console.warn(LOG_PREFIX, 'fetch FAIL', String(url), err);
-        });
-        return result;
-      };
-    }
-
-    // ── Patch XMLHttpRequest ──
-    var origOpen = XMLHttpRequest.prototype.open;
-    var origSend = XMLHttpRequest.prototype.send;
-
-    XMLHttpRequest.prototype.open = function (method, url) {
-      this._xchatLogMethod = method;
-      this._xchatLogUrl = url;
-      this._xchatLogCaller = getCallerInfo();
-      return origOpen.apply(this, arguments);
-    };
-
-    XMLHttpRequest.prototype.send = function () {
-      var xhr = this;
-      var method = xhr._xchatLogMethod || '?';
-      var url = xhr._xchatLogUrl || '?';
-      var caller = xhr._xchatLogCaller || getCallerInfo();
-      console.log(LOG_PREFIX, 'XHR', method, String(url), '| caller:', caller);
-      xhr.addEventListener('loadend', function () {
-        console.log(LOG_PREFIX, 'XHR DONE', xhr.status, method, String(url));
-      });
-      xhr.addEventListener('error', function () {
-        console.warn(LOG_PREFIX, 'XHR FAIL', method, String(url));
-      });
-      xhr.addEventListener('timeout', function () {
-        console.warn(LOG_PREFIX, 'XHR TIMEOUT', method, String(url));
-      });
-      return origSend.apply(this, arguments);
-    };
-
-    // ── Patch GM_xmlhttpRequest if available ──
-    if (typeof GM_xmlhttpRequest === 'function') {
-      var origGM = GM_xmlhttpRequest;
-      GM_xmlhttpRequest = function (details) {
-        var caller = getCallerInfo();
-        console.log(LOG_PREFIX, 'GM_XHR', details.method || 'GET', details.url, '| caller:', caller);
-        var origOnload = details.onload;
-        var origOnerror = details.onerror;
-        var origOntimeout = details.ontimeout;
-        details.onload = function (resp) {
-          console.log(LOG_PREFIX, 'GM_XHR DONE', resp.status, details.method || 'GET', details.url);
-          if (origOnload) origOnload(resp);
-        };
-        details.onerror = function (err) {
-          console.warn(LOG_PREFIX, 'GM_XHR FAIL', details.method || 'GET', details.url, err);
-          if (origOnerror) origOnerror(err);
-        };
-        details.ontimeout = function () {
-          console.warn(LOG_PREFIX, 'GM_XHR TIMEOUT', details.method || 'GET', details.url);
-          if (origOntimeout) origOntimeout();
-        };
-        return origGM(details);
-      };
-    }
-
-    console.log(LOG_PREFIX, 'Network logger installed (fetch + XHR + GM_XHR)');
-  })();
-
   // Must match the domain relaxation used by all xchat frames,
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
   try { document.domain = 'xchat.cz'; } catch {}
@@ -1384,29 +1289,24 @@
   // Returns promise resolving to { online: bool, rooms: [{rid, idle, link, name}] }
   function fetchWonline(nick) {
     var url = 'https://scripts.xchat.cz/scripts/wonline.php?nick=' + encodeURIComponent(nick);
-    return new Promise(function (resolve) {
-      if (typeof GM_xmlhttpRequest !== 'function') {
-        console.error('[xchat-fw] GM_xmlhttpRequest not available, falling back to fetch');
-        fetch(url).then(function (r) { return r.text(); }).then(function (t) { resolve(t); }).catch(function () { resolve(''); });
-        return;
-      }
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: url,
-        onload: function (resp) {
-          resolve(resp.responseText || '');
-        },
-        onerror: function (err) {
-          console.error('[xchat-fw] wonline GM_xmlhttpRequest error:', err);
-          resolve('');
-        },
-        ontimeout: function () {
-          console.error('[xchat-fw] wonline GM_xmlhttpRequest timeout');
-          resolve('');
-        }
-      });
-    }).then(function (text) {
-      if (!text) { return { online: false, rooms: [] }; }
+    var t0 = performance.now();
+    return fetch(url).then(function (r) { return r.text(); })
+      .catch(function () {
+        // CORS fallback via GM_xmlhttpRequest
+        if (typeof GM_xmlhttpRequest !== 'function') return '';
+        return new Promise(function (resolve) {
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url: url,
+            onload: function (resp) { resolve(resp.responseText || ''); },
+            onerror: function () { resolve(''); },
+            ontimeout: function () { resolve(''); }
+          });
+        });
+      })
+      .then(function (text) {
+        console.log('[xchat-perf] A (wonline) ' + (performance.now() - t0).toFixed(1) + 'ms');
+        if (!text) { return { online: false, rooms: [] }; }
       var lines = text.trim().split('\n');
       if (!lines.length) return { online: false, rooms: [] };
       var count = parseInt(lines[0], 10);
@@ -1684,9 +1584,11 @@
     }
 
     // ── Fetch frameset to extract individual frame URLs ──
+    var _t0B = performance.now();
     fetch(framesetUrl, { credentials: 'include' })
       .then(function (r) { return r.text(); })
       .then(function (html) {
+        console.log('[xchat-perf] B (frameset) ' + (performance.now() - _t0B).toFixed(1) + 'ms');
         // DOMParser discards <frame> tags, so parse with regex
         var roomtopUrl = '';
         var textpageUrl = '';
@@ -1925,6 +1827,7 @@
           var fetchAndUpdateMessages = function () {
             if (!floatingWindows[key]) return; // window was closed
 
+            var _t0C = performance.now();
             fetch(buildFetchUrl(), {
               method: 'GET',
               credentials: 'include',
@@ -1935,7 +1838,10 @@
               }
             })
               .then(function (r2) { return r2.arrayBuffer(); })
-              .then(function (buf) { return new TextDecoder('iso-8859-2').decode(buf); })
+              .then(function (buf) {
+                console.log('[xchat-perf] C (messages/' + key + ') ' + (performance.now() - _t0C).toFixed(1) + 'ms');
+                return new TextDecoder('iso-8859-2').decode(buf);
+              })
               .then(function (rfHtml) {
                 if (!floatingWindows[key]) return;
 
@@ -2137,9 +2043,11 @@
 
         // ── Fetch textpage form data for sending ──
         if (textpageUrl) {
+          var _t0D = performance.now();
           fetch(textpageUrl, { credentials: 'include' })
             .then(function (r3) { return r3.text(); })
             .then(function (tpHtml) {
+              console.log('[xchat-perf] D (textpage/' + key + ') ' + (performance.now() - _t0D).toFixed(1) + 'ms');
               if (!floatingWindows[key]) return;
               var tpDoc = new DOMParser().parseFromString(tpHtml, 'text/html');
               var form = tpDoc.querySelector('form');
@@ -2225,9 +2133,11 @@
 
         // Fetch userpage for status icons (skip photos and smileys)
         if (userpageUrl) {
+          var _t0E = performance.now();
           fetch(userpageUrl, { credentials: 'include' })
             .then(function (r2) { return r2.text(); })
             .then(function (upHtml) {
+              console.log('[xchat-perf] E (userpage/' + key + ') ' + (performance.now() - _t0E).toFixed(1) + 'ms');
               var upDoc = new DOMParser().parseFromString(upHtml, 'text/html');
               var crdiv = upDoc.getElementById('crdiv1');
               if (!crdiv) return;
