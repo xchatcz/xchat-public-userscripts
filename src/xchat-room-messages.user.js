@@ -1863,8 +1863,8 @@
                   if (!spanMatch) continue;
                   var msgClass = spanMatch[1];
 
-                  // Skip system messages (entry/exit notifications) — not actual whisper content
-                  if (/umsg_wsystem/.test(msgClass)) continue;
+                  // Skip non-whisper messages (system notifications etc.) — only count actual whispers
+                  if (!/umsg_whw|umsg_wcross/.test(msgClass)) continue;
 
                   var color = colorMarker ? colorMarker[1] : (msgClass === 'umsg_whwi' ? '#C87000' : '#282828');
 
