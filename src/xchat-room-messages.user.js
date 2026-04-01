@@ -1863,6 +1863,9 @@
                   if (!spanMatch) continue;
                   var msgClass = spanMatch[1];
 
+                  // Skip system messages (entry/exit notifications) — not actual whisper content
+                  if (/umsg_wsystem/.test(msgClass)) continue;
+
                   var color = colorMarker ? colorMarker[1] : (msgClass === 'umsg_whwi' ? '#C87000' : '#282828');
 
                   // Extract content inside <span ...>...</span>
