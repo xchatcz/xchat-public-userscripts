@@ -1214,6 +1214,9 @@
       if (fwRef.head) fwRef.head.classList.remove('xchat-fw-head-visible');
       saveFloatingState();
       ensureWindowsFit(fwRef.el);
+      // Focus the input field
+      var inp = fwRef.el.querySelector('.xchat-fw-input');
+      if (inp) setTimeout(function () { inp.focus(); }, 50);
       return;
     }
 
@@ -1301,9 +1304,11 @@
       fw.classList.toggle('xchat-fw-minimized');
       head.classList.toggle('xchat-fw-head-visible');
       saveFloatingState();
-      // When un-minimizing, ensure windows still fit
+      // When un-minimizing, ensure windows still fit and focus input
       if (wasMinimized) {
         ensureWindowsFit(fw);
+        var inp = fw.querySelector('.xchat-fw-input');
+        if (inp) setTimeout(function () { inp.focus(); }, 50);
       }
       // Refresh messages when maximizing
       if (wasMinimized && floatingWindows[key] && floatingWindows[key].fetchMessages) {
@@ -1358,6 +1363,9 @@
       head.classList.remove('xchat-fw-head-visible');
       saveFloatingState();
       ensureWindowsFit(fw);
+      // Focus the input field
+      var inp = fw.querySelector('.xchat-fw-input');
+      if (inp) setTimeout(function () { inp.focus(); }, 50);
       // Refresh messages when maximizing from head
       if (floatingWindows[key] && floatingWindows[key].fetchMessages) {
         floatingWindows[key].fetchMessages();
@@ -1369,7 +1377,14 @@
       head.classList.add('xchat-fw-head-visible');
     }
 
-    container.appendChild(fw);
+    // Insert new window to the right (early in DOM = rightmost in row-reverse)
+    // but always after the launcher window which stays at position 0 (rightmost)
+    var launcherEl = container.querySelector('.xchat-fw-launcher-win');
+    if (launcherEl) {
+      container.insertBefore(fw, launcherEl.nextSibling);
+    } else {
+      container.insertBefore(fw, container.firstChild);
+    }
     getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
@@ -1878,6 +1893,11 @@
         sendBtn.addEventListener('click', doSend);
         footer.appendChild(fwInput);
         footer.appendChild(sendBtn);
+
+        // Focus input when newly opened (not restored minimized)
+        if (!startMinimized) {
+          setTimeout(function () { fwInput.focus(); }, 100);
+        }
 
         // Fetch userpage for status icons (skip photos and smileys)
         if (userpageUrl) {
@@ -3479,7 +3499,7 @@
       '.xchat-fw-msg {',
       '  padding: 1px 4px;',
       '  font-size: 12px;',
-      '  line-height: 1.1;',
+      '  line-height: 1.2;',
       '  word-wrap: break-word;',
       '}',
       '.xchat-fw-msg-time {',
