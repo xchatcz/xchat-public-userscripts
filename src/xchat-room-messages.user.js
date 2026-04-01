@@ -202,8 +202,22 @@
   var DB_VERSION = 2;
   var STORE_NAME = 'messages';
 
+  var _dbCache = null;
+  var _dbPromise = null;
+
   function openDB() {
-    return new Promise(function (resolve, reject) {
+    if (_dbCache) {
+      // Verify the connection is still alive
+      try {
+        _dbCache.transaction(STORE_NAME, 'readonly');
+        return Promise.resolve(_dbCache);
+      } catch {
+        _dbCache = null;
+        _dbPromise = null;
+      }
+    }
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise(function (resolve, reject) {
       var req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = function (e) {
         var db = e.target.result;
@@ -224,9 +238,15 @@
           store.createIndex('fingerprint', 'fingerprint', { unique: true });
         }
       };
-      req.onsuccess = function (e) { resolve(e.target.result); };
-      req.onerror = function (e) { reject(e.target.error); };
+      req.onsuccess = function (e) {
+        _dbCache = e.target.result;
+        _dbCache.onclose = function () { _dbCache = null; _dbPromise = null; };
+        _dbCache.onversionchange = function () { _dbCache.close(); _dbCache = null; _dbPromise = null; };
+        resolve(_dbCache);
+      };
+      req.onerror = function (e) { _dbPromise = null; reject(e.target.error); };
     });
+    return _dbPromise;
   }
 
   function dbAdd(record) {
@@ -792,10 +812,14 @@
     for (var i = 0; i < sysMsgs.length; i++) {
       var t = sysMsgs[i].textContent;
       var sm = t.match(/^System->(\S+?):/);
-      if (sm) return sm[1];
+      if (sm) { CONFIG.myNick = sm[1]; return sm[1]; }
     }
     var myMsg = board.querySelector('.umsg_roomi b');
-    if (myMsg) return myMsg.textContent.trim().replace(/:$/, '');
+    if (myMsg) {
+      var nick = myMsg.textContent.trim().replace(/:$/, '');
+      CONFIG.myNick = nick;
+      return nick;
+    }
     return null;
   }
 
@@ -1135,7 +1159,8 @@
     if (!container) return;
     var changed = false;
 
-    while (true) {
+    var safetyLimit = 50;
+    while (safetyLimit-- > 0) {
       var visible = container.querySelectorAll('.xchat-fw:not(.xchat-fw-minimized)');
       if (visible.length <= 1) break; // always keep at least 1 container visible
 
@@ -3916,15 +3941,30 @@
       }, true);
     }
 
+    var pendingNodes = [];
+    var pendingRaf = 0;
+
+    function processPendingNodes() {
+      pendingRaf = 0;
+      var nodes = pendingNodes;
+      pendingNodes = [];
+      for (var ni = 0; ni < nodes.length; ni++) {
+        captureDiv(nodes[ni]);
+        processEntryDiv(nodes[ni]);
+        markBadCommandDiv(nodes[ni]);
+      }
+    }
+
     const observer = new MutationObserver(function (mutations) {
       for (const mut of mutations) {
         for (const node of mut.addedNodes) {
           if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'DIV') {
-            captureDiv(node);
-            processEntryDiv(node);
-            markBadCommandDiv(node);
+            pendingNodes.push(node);
           }
         }
+      }
+      if (pendingNodes.length > 0 && !pendingRaf) {
+        pendingRaf = requestAnimationFrame(processPendingNodes);
       }
     });
 
