@@ -1148,7 +1148,6 @@
   // Returns promise resolving to { online: bool, rooms: [{rid, idle, link, name}] }
   function fetchWonline(nick) {
     var url = 'https://scripts.xchat.cz/scripts/wonline.php?nick=' + encodeURIComponent(nick);
-    console.log('[xchat-fw] wonline FETCH url:', url);
     return new Promise(function (resolve) {
       if (typeof GM_xmlhttpRequest !== 'function') {
         console.error('[xchat-fw] GM_xmlhttpRequest not available, falling back to fetch');
@@ -1159,8 +1158,6 @@
         method: 'GET',
         url: url,
         onload: function (resp) {
-          console.log('[xchat-fw] wonline GM response status:', resp.status, resp.statusText);
-          console.log('[xchat-fw] wonline GM responseText (' + (resp.responseText || '').length + ' chars):', JSON.stringify(resp.responseText));
           resolve(resp.responseText || '');
         },
         onerror: function (err) {
@@ -1173,25 +1170,21 @@
         }
       });
     }).then(function (text) {
-      if (!text) { console.log('[xchat-fw] wonline → empty response'); return { online: false, rooms: [] }; }
+      if (!text) { return { online: false, rooms: [] }; }
       var lines = text.trim().split('\n');
-      console.log('[xchat-fw] wonline lines count:', lines.length, 'lines:', JSON.stringify(lines));
       if (!lines.length) return { online: false, rooms: [] };
       var count = parseInt(lines[0], 10);
-      console.log('[xchat-fw] wonline count (line 0):', JSON.stringify(lines[0]), '→ parsed:', count);
       if (!count || count <= 0) return { online: false, rooms: [] };
       var rooms = [];
       for (var i = 1; i < lines.length; i++) {
         var line = lines[i].trim();
         if (!line) continue;
         var parts = line.match(/^(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/);
-        console.log('[xchat-fw] wonline line[' + i + ']:', JSON.stringify(line), '→ match:', parts ? JSON.stringify(parts.slice(1)) : 'NULL');
         if (parts) {
           rooms.push({ rid: parts[1], idle: parts[2], link: parts[3], name: parts[4].trim() });
         }
       }
       var result = { online: rooms.length > 0, rooms: rooms };
-      console.log('[xchat-fw] wonline RESULT for ' + nick + ':', JSON.stringify(result));
       return result;
     });
   }
@@ -1522,14 +1515,13 @@
                 var rec = relevant[i];
                 var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
                 var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
-                var dateStr = ('0' + ts.getDate()).slice(-2) + '.' + ('0' + (ts.getMonth() + 1)).slice(-2) + '.';
                 var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
                 if (seenKeys[msgKey]) continue;
                 seenKeys[msgKey] = true;
                 var isMine = /_(out|i)$/.test(rec.message_type || '');
                 var msgEl = createMsgEl({
                   key: msgKey,
-                  time: dateStr + ' ' + timeStr,
+                  time: timeStr,
                   nick: rec.sender,
                   text: rec.content_html || escapeHtml(rec.content_text || ''),
                   color: isMine ? '#C87000' : '#282828',
@@ -1587,14 +1579,13 @@
               var rec = allHistoryMsgs[i];
               var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
               var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
-              var dateStr = ('0' + ts.getDate()).slice(-2) + '.' + ('0' + (ts.getMonth() + 1)).slice(-2) + '.';
               var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
               if (seenKeys[msgKey]) continue;
               seenKeys[msgKey] = true;
               var isMine = /_(out|i)$/.test(rec.message_type || '');
               var msgEl = createMsgEl({
                 key: msgKey,
-                time: dateStr + ' ' + timeStr,
+                time: timeStr,
                 nick: rec.sender,
                 text: rec.content_html || escapeHtml(rec.content_text || ''),
                 color: isMine ? '#C87000' : '#282828',
@@ -1678,11 +1669,15 @@
                 if (!bodyMatch) return;
                 var bodyInner = bodyMatch[1];
 
-                // Strip outer <font> wrappers to get to message lines
-                // Remove <font face="..."> and <font size="..."> opening tags, and their closing </font>
+                // Strip <font> wrappers to get to message lines.
+                // First extract color from any <font> that carries a color attribute,
+                // then remove ALL <font> opening and closing tags.
                 var stripped = bodyInner
-                  .replace(/<font\s+face="[^"]*">/gi, '')
-                  .replace(/<font\s+size="[^"]*">/gi, '')
+                  .replace(/<font\b[^>]*>/gi, function (tag) {
+                    // Preserve per-message color as a lightweight marker
+                    var cm = tag.match(/\bcolor=["']?([^"'\s>]+)/i);
+                    return cm ? '\x01' + cm[1] + '\x01' : '';
+                  })
                   .replace(/<\/font>/gi, '');
 
                 // Split on <br> to get individual message lines
@@ -1693,19 +1688,20 @@
                   var line = lines[li].trim();
                   if (!line) continue;
 
-                  // Extract time at start
-                  var timeMatch = line.match(/^(\d{1,2}:\d{2}:\d{2})\s*/);
+                  // Extract time (possibly preceded by residual tags/markers)
+                  var timeMatch = line.match(/(\d{1,2}:\d{2}:\d{2})/);
                   if (!timeMatch) continue;
                   var time = timeMatch[1];
 
-                  // Extract color from <font color="...">
-                  var colorMatch = line.match(/<font\s+color="([^"]*)"/i);
-                  var color = colorMatch ? colorMatch[1] : '#282828';
+                  // Extract color from preserved marker, or derive from span class
+                  var colorMarker = line.match(/\x01([^\x01]+)\x01/);
 
-                  // Extract span class (umsg_whw = outgoing orange, umsg_whwi = incoming dark)
+                  // Extract span class (umsg_whwi = outgoing/mine, umsg_whw = incoming/theirs)
                   var spanMatch = line.match(/<span\s+class="([^"]*)">/i);
                   if (!spanMatch) continue;
                   var msgClass = spanMatch[1];
+
+                  var color = colorMarker ? colorMarker[1] : (msgClass === 'umsg_whwi' ? '#C87000' : '#282828');
 
                   // Extract content inside <span ...>...</span>
                   var spanContentMatch = line.match(/<span\s+class="[^"]*">([\s\S]*?)<\/span>/i);
@@ -1717,8 +1713,8 @@
                   if (!nickTextMatch) continue;
                   var msgNick = nickTextMatch[1].trim();
                   var msgText = nickTextMatch[2].trim();
-                  // Remove trailing </font> that might remain
-                  msgText = msgText.replace(/<\/font>\s*$/i, '').trim();
+                  // Remove residual font markers and tags
+                  msgText = msgText.replace(/\x01[^\x01]*\x01/g, '').replace(/<\/font>\s*$/i, '').trim();
 
                   // Unique key for deduplication
                   var msgKey = time + '|' + msgNick + '|' + msgText;
