@@ -132,6 +132,10 @@
     return Math.max(1, parseInt(v, 10) || 100);
   }
 
+  function getFwAutoOpen() {
+    return getSetting('fwAutoOpen', false);
+  }
+
   function parseIdleToSeconds(idle) {
     if (!idle) return 0;
     var parts = idle.split(':');
@@ -400,7 +404,18 @@
     var rec = parseBoardDiv(div);
     if (!rec) return;
     rec.fingerprint = msgFingerprint(rec);
-    dbAdd(rec).catch(function (err) { /* silent */ });
+    dbAdd(rec).then(function (id) {
+      // id is null when the record already existed in IndexedDB (duplicate)
+      // Only auto-open for genuinely new incoming whispers
+      if (id && rec.is_whisper && rec.message_type === 'whisper' && getWhisperMode() === 'floating' && getFwAutoOpen()) {
+        var link = div.querySelector('a[href*="whisper_to"]');
+        if (link) {
+          _fwAutoOpenNoFocus = true;
+          link.click();
+          _fwAutoOpenNoFocus = false;
+        }
+      }
+    }).catch(function () { /* silent */ });
   }
 
   function captureAllDivs() {
@@ -965,6 +980,7 @@
   // ── Floating whisper windows ──
 
   var floatingWindows = {}; // keyed by normalized nick
+  var _fwAutoOpenNoFocus = false; // temporary flag for auto-open without focus
   var FW_STATE_KEY = '_xchat_fw_state';
   var FW_HISTORY_KEY = '_xchat_fw_history';
   var FW_HISTORY_MAX = 1000;
@@ -1196,7 +1212,7 @@
     return location.protocol + '//www.xchat.cz/' + auth + '/modchat?op=whisperingframeset&rid=' + rid + '&wfrom=' + encodeURIComponent(nick);
   }
 
-  function openFloatingWhisper(nick, startMinimized) {
+  function openFloatingWhisper(nick, startMinimized, noFocus) {
     var key = normNick(nick);
     touchWhisperHistory(nick);
     refreshLauncherHistory();
@@ -1210,9 +1226,11 @@
       if (fwRef.el !== container.firstChild) container.insertBefore(fwRef.el, container.firstChild);
       saveFloatingState();
       ensureWindowsFit(fwRef.el);
-      // Focus the input field
-      var inp = fwRef.el.querySelector('.xchat-fw-input');
-      if (inp) setTimeout(function () { inp.focus(); }, 50);
+      // Focus the input field (only for manual opens)
+      if (!noFocus) {
+        var inp = fwRef.el.querySelector('.xchat-fw-input');
+        if (inp) setTimeout(function () { inp.focus(); }, 50);
+      }
       return;
     }
 
@@ -1908,8 +1926,8 @@
         footer.appendChild(fwInput);
         footer.appendChild(sendBtn);
 
-        // Focus input when newly opened (not restored minimized)
-        if (!startMinimized) {
+        // Focus input when newly opened (not restored minimized, not auto-opened)
+        if (!startMinimized && !noFocus) {
           setTimeout(function () { fwInput.focus(); }, 100);
         }
 
@@ -2519,6 +2537,21 @@
     whisperRow.appendChild(whisperSelect);
     modal.appendChild(whisperRow);
 
+    // Auto-open floating windows on incoming whisper
+    var fwAutoOpenRow = targetDoc.createElement('div');
+    fwAutoOpenRow.style.cssText = 'margin-top: 3px;';
+    var fwAutoOpenCheckbox = targetDoc.createElement('input');
+    fwAutoOpenCheckbox.type = 'checkbox';
+    fwAutoOpenCheckbox.id = 'xchat-fw-auto-open';
+    fwAutoOpenCheckbox.checked = getFwAutoOpen();
+    fwAutoOpenRow.appendChild(fwAutoOpenCheckbox);
+    var fwAutoOpenLabel = targetDoc.createElement('label');
+    fwAutoOpenLabel.htmlFor = 'xchat-fw-auto-open';
+    fwAutoOpenLabel.textContent = ' Otev\u00edrat okna automaticky, kdy\u017e mi n\u011bkdo za\u0161ept\u00e1';
+    fwAutoOpenLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    fwAutoOpenRow.appendChild(fwAutoOpenLabel);
+    modal.appendChild(fwAutoOpenRow);
+
     // Newest first toggle for floating whisper windows
     var fwOrderRow = targetDoc.createElement('div');
     fwOrderRow.style.cssText = 'margin-top: 3px;';
@@ -2758,6 +2791,7 @@
       s.highlight = hlCheckbox.checked;
       s.showRid = ridCheckbox.checked;
       s.whisperMode = whisperSelect.value;
+      s.fwAutoOpen = fwAutoOpenCheckbox.checked;
       s.fwNewestFirst = fwOrderCheckbox.checked;
       s.fwMaxMessages = parseInt(fwMaxInput.value, 10) || 100;
       s.refreshInterval = parseInt(sel.value, 10) || 0;
@@ -3717,7 +3751,7 @@
         if (!m) return;
         e.preventDefault();
         e.stopPropagation();
-        openFloatingWhisper(m[1]);
+        openFloatingWhisper(m[1], false, _fwAutoOpenNoFocus);
       }, true);
     }
 
