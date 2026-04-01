@@ -27,7 +27,6 @@
   // FW_POLL_IDLE       – polling zpráv plovoucích oken (minimalizované okno)
   // FW_POLL_STAGGER    – rozestup startu pollingu mezi okny (thundering-herd ochrana)
   // COUNTDOWN_TICK     – tick odpočtu obnovení skla (setupCountdown)
-  // BOARD_REFRESH_FALLBACK – výchozí interval async obnovy skla, pokud nativní countdown chybí
   //
   // -- Jednorazove timeouty --
   // FOCUS_DELAY        – zpoždění focusu inputu po otevření okna
@@ -40,7 +39,6 @@
   var FW_POLL_IDLE        = 30000;
   var FW_POLL_STAGGER     = 1000;
   var COUNTDOWN_TICK      = 1000;
-  var BOARD_REFRESH_FALLBACK = 10000;
 
   var FOCUS_DELAY         = 50;
   var SEND_FETCH_DELAY    = 600;
@@ -560,6 +558,7 @@
   // ── Async board refresh (replaces synchronous dataframe.refresh / location.reload) ──
 
   var _asyncRefreshInFlight = false;
+  var _boardRefreshUrl = ''; // Set once in initStartframe; asyncRefreshBoard uses this fixed URL
 
   function asyncRefreshBoard() {
     if (_asyncRefreshInFlight) return;
@@ -567,8 +566,9 @@
     if (!board) return;
     _asyncRefreshInFlight = true;
 
+    var url = _boardRefreshUrl || location.href;
     var _t0 = performance.now();
-    fetch(location.href, {
+    fetch(url, {
       credentials: 'include',
       headers: {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -621,6 +621,47 @@
       .finally(function () {
         _asyncRefreshInFlight = false;
       });
+  }
+
+  // Kill the native synchronous reload timer and <meta refresh> in startframe.
+  // The native XChat page (op=startframe) auto-refreshes via one of:
+  //   a) A global refresh() function called by infopage's countdown
+  //   b) setTimeout / setInterval inside the page itself
+  //   c) <meta http-equiv="refresh" content="N">
+  // We disable all three and replace with asyncRefreshBoard.
+  function killNativeRefreshTimers() {
+    // (c) Remove <meta http-equiv="refresh">
+    var metas = document.querySelectorAll('meta[http-equiv="refresh"]');
+    for (var i = 0; i < metas.length; i++) metas[i].remove();
+
+    // (b) Kill all existing timers set by native startframe JS.
+    // We clear the highest known timer ID. This is aggressive but safe
+    // because our userscript runs at document-end, AFTER native scripts,
+    // and we set up our own timers AFTER this call.
+    var highWater = setTimeout(function () {}, 0);
+    for (var tid = 1; tid <= highWater; tid++) {
+      clearTimeout(tid);
+      clearInterval(tid);
+    }
+
+    // (d) Intercept location.reload() on this window.
+    // The native refresh() function almost certainly calls location.reload().
+    // Even if a native timer captured the old refresh() reference before our
+    // override, the actual reload still goes through location.reload — we catch
+    // it here and redirect to our non-blocking async refresh.
+    Object.defineProperty(location, 'reload', {
+      configurable: true,
+      value: function () {
+        console.log('[xchat] intercepted location.reload → asyncRefreshBoard');
+        asyncRefreshBoard();
+      }
+    });
+
+    // (a) Override the global refresh function
+    window.refresh = asyncRefreshBoard;
+
+    // Expose on top for cross-frame access
+    try { window.top._xchatAsyncRefreshBoard = asyncRefreshBoard; } catch {};
   }
 
   function findOriginalForm() {
@@ -2642,6 +2683,40 @@
     settingsSpan.appendChild(settingsLink);
     hlContainer.parentNode.insertBefore(settingsSpan, hlContainer.nextSibling);
 
+    // ── Intercept native dataframe.refresh ──
+    // The native XChat JS in infopage counts down and calls
+    // window.top.roomframe.dataframe.refresh() which does a synchronous
+    // full page reload — blocking the main thread for hundreds of ms.
+    // We override that refresh function to call our async version instead.
+    // This works regardless of the refreshInterval setting.
+    function patchDataframeRefresh() {
+      try {
+        var df = window.top.roomframe && window.top.roomframe.dataframe;
+        if (df && typeof df.refresh === 'function') {
+          // Only patch if not already patched
+          if (!df._xchatRefreshPatched) {
+            var origRefresh = df.refresh;
+            df.refresh = function () {
+              // Use the async version exposed from startframe
+              try {
+                if (typeof window.top._xchatAsyncRefreshBoard === 'function') {
+                  window.top._xchatAsyncRefreshBoard();
+                  return;
+                }
+              } catch {}
+              // Fallback to original if async version unavailable
+              origRefresh.call(df);
+            };
+            df._xchatRefreshPatched = true;
+          }
+        }
+      } catch { /* cross-origin */ }
+    }
+    patchDataframeRefresh();
+    // Re-patch after a delay (dataframe might not be loaded yet when infopage inits)
+    setTimeout(patchDataframeRefresh, 2000);
+    setTimeout(patchDataframeRefresh, 5000);
+
     // ── Countdown override ──
 
     setupCountdown();
@@ -2681,7 +2756,9 @@
       // Silent 1s refresh
       countdownTimer = setInterval(function () {
         try {
-          if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
+          if (typeof window.top._xchatAsyncRefreshBoard === 'function') {
+            window.top._xchatAsyncRefreshBoard();
+          } else if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
             window.top.roomframe.dataframe.refresh();
           }
         } catch {}
@@ -2696,7 +2773,9 @@
         if (counter <= 0) {
           counter = customSec;
           try {
-            if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
+            if (typeof window.top._xchatAsyncRefreshBoard === 'function') {
+              window.top._xchatAsyncRefreshBoard();
+            } else if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
               window.top.roomframe.dataframe.refresh();
             }
           } catch {}
@@ -4063,13 +4142,13 @@
     const board = document.getElementById('board');
     if (!board) return;
 
-    // Override the native refresh() function so that dataframe.refresh()
-    // (called from infopage's countdown or our setupCountdown/startAutoRefresh)
-    // does an async fetch + DOM diff instead of a synchronous full page reload.
-    // This eliminates the ~10 s browser freeze caused by the blocking reload.
-    if (typeof window.refresh === 'function' || typeof window.refresh === 'undefined') {
-      window.refresh = asyncRefreshBoard;
-    }
+    // Lock the URL for async refresh before killing timers
+    _boardRefreshUrl = location.href;
+
+    // Kill ALL native refresh mechanisms (meta refresh, timers, refresh function)
+    // and replace with our async fetch + DOM diff approach.
+    // This MUST be called before we set up our own MutationObserver and timers.
+    killNativeRefreshTimers();
 
     // Intercept clicks on whisper_to links — more reliable than overriding
     // the function across frame boundaries
