@@ -1303,6 +1303,7 @@
 
             var textSpan = document.createElement('span');
             textSpan.className = 'xchat-fw-msg-text';
+            textSpan.style.color = msg.color;
             // Preserve images (smileys) in text
             var tmpDiv = document.createElement('div');
             tmpDiv.innerHTML = msg.text;
@@ -1336,7 +1337,8 @@
                 'Pragma': 'no-cache'
               }
             })
-              .then(function (r2) { return r2.text(); })
+              .then(function (r2) { return r2.arrayBuffer(); })
+              .then(function (buf) { return new TextDecoder('iso-8859-2').decode(buf); })
               .then(function (rfHtml) {
                 if (!floatingWindows[key]) return;
 
@@ -3034,6 +3036,7 @@
       '  background: #CCCCCD;',
       '}',
       '.xchat-fw-footer {',
+      '  background: #E6E7E8;',
       '  flex-shrink: 0;',
       '  border-top: 1px solid #ccc;',
       '  display: flex;',
@@ -3082,9 +3085,9 @@
       '  flex-direction: column;',
       '}',
       '.xchat-fw-msg {',
-      '  padding: 2px 4px;',
+      '  padding: 1px 4px;',
       '  font-size: 12px;',
-      '  line-height: 1.4;',
+      '  line-height: 1.1;',
       '  word-wrap: break-word;',
       '}',
       '.xchat-fw-msg-time {',
