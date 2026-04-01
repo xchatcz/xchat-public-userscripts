@@ -736,7 +736,9 @@
     });
 
     // Fallback cleanup if load never fires.
+    console.log('[xchat] SEND_CLEANUP_DELAY START (sendMessage)');
     setTimeout(function () {
+      console.log('[xchat] SEND_CLEANUP_DELAY STOP (sendMessage)');
       fakeForm.remove();
       iframe.remove();
     }, SEND_CLEANUP_DELAY);
@@ -2251,7 +2253,8 @@
               setTimeout(function () { fwd.fetchMessages(); }, SEND_FETCH_DELAY);
             }
           });
-          setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, SEND_CLEANUP_DELAY);
+          console.log('[xchat] SEND_CLEANUP_DELAY START (floatingWhisper)');
+          setTimeout(function () { console.log('[xchat] SEND_CLEANUP_DELAY STOP (floatingWhisper)'); fakeForm.remove(); hIframe.remove(); }, SEND_CLEANUP_DELAY);
         };
         fwInput.addEventListener('keydown', function (e) {
           if (e.key === 'Enter') { e.preventDefault(); doSend(); }
