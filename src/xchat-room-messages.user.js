@@ -7,7 +7,8 @@
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
 // @match        https://www.xchat.cz/*/history.html*
 // @run-at       document-end
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      scripts.xchat.cz
 // ==/UserScript==
 
 (function () {
@@ -1063,6 +1064,68 @@
     return auth;
   }
 
+  function getWtkn() {
+    try { return window.top.wtkn || ''; } catch { return ''; }
+  }
+
+  function buildRoomVisitUrl(rid) {
+    var auth = getAuthPath();
+    var wtkn = getWtkn();
+    return 'https://www.xchat.cz/' + auth + '/room/intro.php?rid=' + encodeURIComponent(rid) + (wtkn ? '&wtkn=' + encodeURIComponent(wtkn) : '');
+  }
+
+  // Fetch user online status from wonline.php
+  // Returns promise resolving to { online: bool, rooms: [{rid, idle, link, name}] }
+  function fetchWonline(nick) {
+    var url = 'https://scripts.xchat.cz/scripts/wonline.php?nick=' + encodeURIComponent(nick);
+    console.log('[xchat-fw] wonline FETCH url:', url);
+    return new Promise(function (resolve) {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        console.error('[xchat-fw] GM_xmlhttpRequest not available, falling back to fetch');
+        fetch(url).then(function (r) { return r.text(); }).then(function (t) { resolve(t); }).catch(function () { resolve(''); });
+        return;
+      }
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: url,
+        onload: function (resp) {
+          console.log('[xchat-fw] wonline GM response status:', resp.status, resp.statusText);
+          console.log('[xchat-fw] wonline GM responseText (' + (resp.responseText || '').length + ' chars):', JSON.stringify(resp.responseText));
+          resolve(resp.responseText || '');
+        },
+        onerror: function (err) {
+          console.error('[xchat-fw] wonline GM_xmlhttpRequest error:', err);
+          resolve('');
+        },
+        ontimeout: function () {
+          console.error('[xchat-fw] wonline GM_xmlhttpRequest timeout');
+          resolve('');
+        }
+      });
+    }).then(function (text) {
+      if (!text) { console.log('[xchat-fw] wonline → empty response'); return { online: false, rooms: [] }; }
+      var lines = text.trim().split('\n');
+      console.log('[xchat-fw] wonline lines count:', lines.length, 'lines:', JSON.stringify(lines));
+      if (!lines.length) return { online: false, rooms: [] };
+      var count = parseInt(lines[0], 10);
+      console.log('[xchat-fw] wonline count (line 0):', JSON.stringify(lines[0]), '→ parsed:', count);
+      if (!count || count <= 0) return { online: false, rooms: [] };
+      var rooms = [];
+      for (var i = 1; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (!line) continue;
+        var parts = line.match(/^(\d+)\s+(\S+)\s+(\S+)\s+(.+)$/);
+        console.log('[xchat-fw] wonline line[' + i + ']:', JSON.stringify(line), '→ match:', parts ? JSON.stringify(parts.slice(1)) : 'NULL');
+        if (parts) {
+          rooms.push({ rid: parts[1], idle: parts[2], link: parts[3], name: parts[4].trim() });
+        }
+      }
+      var result = { online: rooms.length > 0, rooms: rooms };
+      console.log('[xchat-fw] wonline RESULT for ' + nick + ':', JSON.stringify(result));
+      return result;
+    });
+  }
+
   function buildWhisperBaseUrl(nick) {
     var auth = getAuthPath();
     var rid = 0;
@@ -1110,8 +1173,7 @@
 
     var roomEl = document.createElement('div');
     roomEl.className = 'xchat-fw-room';
-    var rn = getRoomName();
-    roomEl.textContent = rn ? 'v m\u00edstnosti \u201e' + rn + '\u201c' : '';
+    roomEl.textContent = '';
     texts.appendChild(roomEl);
 
     info.appendChild(texts);
@@ -1228,11 +1290,33 @@
       head.classList.add('xchat-fw-head-visible');
     }
 
+    // Auto-minimize oldest window if new one won't fit
+    if (!startMinimized) {
+      var winWidth = 300, winGap = 6, rightOffset = 60;
+      var visibleCount = 0;
+      var visibleEls = container.querySelectorAll('.xchat-fw:not(.xchat-fw-minimized)');
+      visibleCount = visibleEls.length; // count before adding new one
+      var neededWidth = (visibleCount + 1) * (winWidth + winGap);
+      if (neededWidth > window.innerWidth - rightOffset) {
+        // Find oldest non-launcher visible window and minimize it
+        var keys = Object.keys(floatingWindows);
+        for (var ki = 0; ki < keys.length; ki++) {
+          var fw2 = floatingWindows[keys[ki]];
+          if (fw2.el && !fw2.el.classList.contains('xchat-fw-minimized')) {
+            fw2.el.classList.add('xchat-fw-minimized');
+            if (fw2.head) fw2.head.classList.add('xchat-fw-head-visible');
+            saveFloatingState();
+            break;
+          }
+        }
+      }
+    }
+
     container.appendChild(fw);
     getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
-    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: {} };
+    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: {}, openedAt: Date.now() };
     saveFloatingState();
 
     // ── Fetch frameset to extract individual frame URLs ──
@@ -1447,11 +1531,52 @@
               .catch(function () {});
           };
 
-          // Initial fetch
+          // ── Fetch remote user's online status from wonline.php ──
+          var fetchAndUpdateRooms = function () {
+            if (!floatingWindows[key]) return;
+            fetchWonline(floatingWindows[key].origNick).then(function (result) {
+              if (!floatingWindows[key]) return;
+              roomEl.innerHTML = '';
+              if (result.online && result.rooms.length > 0) {
+                var dot = document.createElement('span');
+                dot.className = 'xchat-fw-status-dot xchat-fw-status-online';
+                dot.textContent = '\u25CF ';
+                roomEl.appendChild(dot);
+                var prefix = document.createTextNode('v m\u00edstnosti: ');
+                roomEl.appendChild(prefix);
+                for (var ri = 0; ri < result.rooms.length; ri++) {
+                  if (ri > 0) roomEl.appendChild(document.createTextNode(', '));
+                  var room = result.rooms[ri];
+                  var roomLink = document.createElement('a');
+                  roomLink.href = buildRoomVisitUrl(room.rid);
+                  roomLink.target = '_blank';
+                  roomLink.className = 'xchat-fw-room-link';
+                  roomLink.textContent = room.name + ' (' + room.idle + ')';
+                  roomEl.appendChild(roomLink);
+                }
+              } else {
+                var dot = document.createElement('span');
+                dot.className = 'xchat-fw-status-dot xchat-fw-status-offline';
+                dot.textContent = '\u25CF ';
+                roomEl.appendChild(dot);
+                var offlineText = document.createElement('span');
+                offlineText.className = 'xchat-fw-status-offline-text';
+                offlineText.textContent = 'U\u017eivatel je offline';
+                roomEl.appendChild(offlineText);
+              }
+            });
+          };
+
+          // Initial fetches
           fetchAndUpdateMessages();
+          fetchAndUpdateRooms();
 
           // Periodic polling (5 seconds)
-          var pollTimer = setInterval(fetchAndUpdateMessages, 5000);
+          var pollInterval = function () {
+            fetchAndUpdateMessages();
+            fetchAndUpdateRooms();
+          };
+          var pollTimer = setInterval(pollInterval, 5000);
           floatingWindows[key].pollTimer = pollTimer;
           floatingWindows[key].fetchMessages = fetchAndUpdateMessages;
         }
@@ -1657,6 +1782,10 @@
       nickEl.className = 'xchat-fw-nick';
       nickEl.textContent = 'Po\u0161eptat';
       texts.appendChild(nickEl);
+      var roomEl = document.createElement('div');
+      roomEl.className = 'xchat-fw-room';
+      roomEl.textContent = 'Naj\u00edt u\u017eivatele...';
+      texts.appendChild(roomEl);
       headerInfo.appendChild(texts);
       header.appendChild(headerInfo);
 
@@ -1722,7 +1851,7 @@
       body.appendChild(historyUl);
 
       fw.appendChild(body);
-      container.appendChild(fw);
+      container.insertBefore(fw, container.firstChild);
 
       // Populate history
       refreshLauncherHistory();
@@ -1736,13 +1865,7 @@
 
   // Update room names in all open floating windows
   function updateFloatingRoomNames() {
-    var rn = getRoomName();
-    var text = rn ? 'v m\u00edstnosti \u201e' + rn + '\u201c' : '';
-    for (var k in floatingWindows) {
-      if (floatingWindows.hasOwnProperty(k) && floatingWindows[k].roomEl) {
-        floatingWindows[k].roomEl.textContent = text;
-      }
-    }
+    // Room names are now fetched per-window from infopagewh; this is a no-op placeholder.
   }
 
   function installWhisperOverride() {
@@ -3008,6 +3131,28 @@
       '  overflow: hidden;',
       '  text-overflow: ellipsis;',
       '}',
+      '.xchat-fw-status-dot {',
+      '  font-size: 10px;',
+      '}',
+      '.xchat-fw-status-online {',
+      '  color: #2a2;',
+      '}',
+      '.xchat-fw-status-offline {',
+      '  color: #c00;',
+      '}',
+      '.xchat-fw-status-offline-text {',
+      '  color: #c00;',
+      '  font-size: 11px;',
+      '  padding: 4px 8px;',
+      '}',
+      '.xchat-fw-room-link {',
+      '  color: #fff;',
+      '  text-decoration: underline;',
+      '  cursor: pointer;',
+      '}',
+      '.xchat-fw-room-link:hover {',
+      '  opacity: 0.8;',
+      '}',
       '.xchat-fw-header-btns {',
       '  display: flex;',
       '  gap: 4px;',
@@ -3116,9 +3261,7 @@
       '  height: 22px;',
       '  pointer-events: none;',
       '}',
-      '.xchat-fw-launcher-win {',
-      '  height: 280px;',
-      '}',
+
       '.xchat-fw-launcher-body {',
       '  flex: 1;',
       '  display: flex;',
