@@ -18,6 +18,36 @@
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
   try { document.domain = 'xchat.cz'; } catch {}
 
+  // ── Globální nastavení intervalů (ms) ──
+  //
+  // Všechny periodické časovače a jednorázové timeouty na jednom místě.
+  //
+  // -- Periodicke intervaly --
+  // FW_POLL_ACTIVE     – polling zpráv plovoucích oken (viditelné okno)
+  // FW_POLL_IDLE       – polling zpráv plovoucích oken (minimalizované okno)
+  // FW_POLL_STAGGER    – rozestup startu pollingu mezi okny (thundering-herd ochrana)
+  // COUNTDOWN_TICK     – tick odpočtu obnovení skla (setupCountdown)
+  // BOARD_REFRESH_FALLBACK – výchozí interval async obnovy skla, pokud nativní countdown chybí
+  //
+  // -- Jednorazove timeouty --
+  // FOCUS_DELAY        – zpoždění focusu inputu po otevření okna
+  // SEND_FETCH_DELAY   – zpoždění obnovení zpráv po odeslání šepotu (čekání na server)
+  // SEND_CLEANUP_DELAY – fallback cleanup skrytého formu/iframe po odeslání
+  // BTN_RESET_DELAY    – reset textu tlačítka po akci (export, smazání…)
+  // FW_FOCUS_DELAY     – zpoždění focusu inputu plovoucího okna po otevření
+
+  var FW_POLL_ACTIVE      = 5000;
+  var FW_POLL_IDLE        = 30000;
+  var FW_POLL_STAGGER     = 1000;
+  var COUNTDOWN_TICK      = 1000;
+  var BOARD_REFRESH_FALLBACK = 10000;
+
+  var FOCUS_DELAY         = 50;
+  var SEND_FETCH_DELAY    = 600;
+  var SEND_CLEANUP_DELAY  = 10000;
+  var BTN_RESET_DELAY     = 2000;
+  var FW_FOCUS_DELAY      = 100;
+
   // ── Konfigurace ──
   var CONFIG = {
     myNick: '',
@@ -471,6 +501,11 @@
   }
 
   function captureDiv(div) {
+    // Set board-level fingerprint BEFORE any DOM modifications (processEntryDiv adds greet buttons).
+    // Used by asyncRefreshBoard() to diff existing vs. fetched board content.
+    if (!div.dataset.xchatFp) {
+      div.dataset.xchatFp = div.textContent;
+    }
     if (div.dataset.xchatHistCaptured) return;
     div.dataset.xchatHistCaptured = '1';
     if (!isHistoryEnabled()) return;
@@ -520,6 +555,72 @@
     if (!board) return;
     var divs = board.querySelectorAll(':scope > div');
     for (var i = 0; i < divs.length; i++) captureDiv(divs[i]);
+  }
+
+  // ── Async board refresh (replaces synchronous dataframe.refresh / location.reload) ──
+
+  var _asyncRefreshInFlight = false;
+
+  function asyncRefreshBoard() {
+    if (_asyncRefreshInFlight) return;
+    var board = document.getElementById('board');
+    if (!board) return;
+    _asyncRefreshInFlight = true;
+
+    var _t0 = performance.now();
+    fetch(location.href, {
+      credentials: 'include',
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    })
+      .then(function (r) { return r.arrayBuffer(); })
+      .then(function (buf) {
+        var html = new TextDecoder('iso-8859-2').decode(buf);
+        console.log('[xchat-perf] F (board-refresh) ' + (performance.now() - _t0).toFixed(1) + 'ms');
+
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var newBoard = doc.getElementById('board');
+        if (!newBoard) return;
+
+        // Build fingerprint set of existing divs (uses data-xchat-fp set by captureDiv)
+        var existingDivs = board.querySelectorAll(':scope > div');
+        var existingKeys = {};
+        for (var i = 0; i < existingDivs.length; i++) {
+          var ek = existingDivs[i].dataset.xchatFp || existingDivs[i].textContent;
+          existingKeys[ek] = existingDivs[i];
+        }
+
+        // Build fingerprint set of new divs (clean textContent — not yet processed)
+        var newDivs = newBoard.querySelectorAll(':scope > div');
+        var newKeys = {};
+        for (var j = 0; j < newDivs.length; j++) {
+          newKeys[newDivs[j].textContent] = true;
+        }
+
+        // Remove divs no longer present on server (old messages that scrolled off)
+        for (var k = 0; k < existingDivs.length; k++) {
+          var removeKey = existingDivs[k].dataset.xchatFp || existingDivs[k].textContent;
+          if (!newKeys[removeKey]) {
+            existingDivs[k].remove();
+          }
+        }
+
+        // Add new divs that don't exist yet — MutationObserver handles captureDiv + processEntryDiv
+        for (var m = 0; m < newDivs.length; m++) {
+          if (!existingKeys[newDivs[m].textContent]) {
+            board.appendChild(document.importNode(newDivs[m], true));
+          }
+        }
+      })
+      .catch(function (err) {
+        console.warn('[xchat] async board refresh failed:', err);
+      })
+      .finally(function () {
+        _asyncRefreshInFlight = false;
+      });
   }
 
   function findOriginalForm() {
@@ -586,23 +687,18 @@
     document.body.appendChild(fakeForm);
     fakeForm.submit();
 
-    // Once the server responds, trigger a soft refresh of the message board
-    // (same mechanism as the "obnovit" link in infopage).
+    // Once the server responds, trigger an async refresh of the message board.
     iframe.addEventListener('load', function () {
       fakeForm.remove();
       iframe.remove();
-      try {
-        if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
-          window.top.roomframe.dataframe.refresh();
-        }
-      } catch { /* cross-origin */ }
+      asyncRefreshBoard();
     });
 
     // Fallback cleanup if load never fires.
     setTimeout(function () {
       fakeForm.remove();
       iframe.remove();
-    }, 10000);
+    }, SEND_CLEANUP_DELAY);
   }
 
   function injectStyles() {
@@ -1083,9 +1179,6 @@
   var floatingWindows = {}; // keyed by normalized nick
   var _fwAutoOpenNoFocus = false; // temporary flag for auto-open without focus
   var _fwPollStagger = 0; // incrementing stagger offset (ms) per window
-  var FW_POLL_ACTIVE = 5000;  // poll interval for visible windows (ms)
-  var FW_POLL_IDLE   = 30000; // poll interval for minimized windows (ms)
-  var FW_POLL_STAGGER = 1000; // stagger step between windows (ms)
   var FW_STATE_KEY = '_xchat_fw_state';
 
   function updateUnreadBadge(key, count) {
@@ -1354,7 +1447,7 @@
       // Focus the input field (only for manual opens)
       if (!noFocus) {
         var inp = fwRef.el.querySelector('.xchat-fw-input');
-        if (inp) setTimeout(function () { inp.focus(); }, 50);
+        if (inp) setTimeout(function () { inp.focus(); }, FOCUS_DELAY);
       }
       return;
     }
@@ -1474,7 +1567,7 @@
       if (wasMinimized) {
         ensureWindowsFit(fw);
         var inp = fw.querySelector('.xchat-fw-input');
-        if (inp) setTimeout(function () { inp.focus(); }, 50);
+        if (inp) setTimeout(function () { inp.focus(); }, FOCUS_DELAY);
       }
       // Refresh messages when maximizing
       if (wasMinimized && floatingWindows[key] && floatingWindows[key].fetchMessages) {
@@ -1545,7 +1638,7 @@
       ensureWindowsFit(fw);
       // Focus the input field
       var inp = fw.querySelector('.xchat-fw-input');
-      if (inp) setTimeout(function () { inp.focus(); }, 50);
+      if (inp) setTimeout(function () { inp.focus(); }, FOCUS_DELAY);
       // Refresh messages when maximizing from head
       if (floatingWindows[key] && floatingWindows[key].fetchMessages) {
         floatingWindows[key].fetchMessages();
@@ -2114,10 +2207,10 @@
             // Refresh messages after sending
             var fwd = floatingWindows[key];
             if (fwd && fwd.fetchMessages) {
-              setTimeout(function () { fwd.fetchMessages(); }, 600);
+              setTimeout(function () { fwd.fetchMessages(); }, SEND_FETCH_DELAY);
             }
           });
-          setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, 10000);
+          setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, SEND_CLEANUP_DELAY);
         };
         fwInput.addEventListener('keydown', function (e) {
           if (e.key === 'Enter') { e.preventDefault(); doSend(); }
@@ -2128,7 +2221,7 @@
 
         // Focus input when newly opened (not restored minimized, not auto-opened)
         if (!startMinimized && !noFocus) {
-          setTimeout(function () { fwInput.focus(); }, 100);
+          setTimeout(function () { fwInput.focus(); }, FW_FOCUS_DELAY);
         }
 
         // Fetch userpage for status icons (skip photos and smileys)
@@ -2592,7 +2685,7 @@
             window.top.roomframe.dataframe.refresh();
           }
         } catch {}
-      }, 1000);
+      }, COUNTDOWN_TICK);
     } else {
       // Replace counter with own countdown
       var counter = customSec;
@@ -2609,7 +2702,7 @@
           } catch {}
         }
         refreshEl.textContent = String(counter);
-      }, 1000);
+      }, COUNTDOWN_TICK);
     }
   }
 
@@ -2824,7 +2917,7 @@
       if (confirm('Opravdu smazat ve\u0161kerou ulo\u017eenou historii?')) {
         dbClearAll().then(function () {
           histDeleteBtn.textContent = 'Smaz\u00e1no!';
-          setTimeout(function () { histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii'; }, 2000);
+          setTimeout(function () { histDeleteBtn.textContent = 'Smazat ve\u0161kerou historii'; }, BTN_RESET_DELAY);
         });
       }
     });
@@ -3052,13 +3145,7 @@
     if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
     var sec = getRefreshInterval();
     if (!sec) return;
-    autoRefreshTimer = setInterval(function () {
-      try {
-        if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
-          window.top.roomframe.dataframe.refresh();
-        }
-      } catch {}
-    }, sec * 1000);
+    autoRefreshTimer = setInterval(asyncRefreshBoard, sec * 1000);
   }
 
   // ── History page ──
@@ -3452,7 +3539,7 @@
       var json = JSON.stringify(currentResults, null, 2);
       navigator.clipboard.writeText(json).then(function () {
         exportJsonBtn.textContent = 'Zkop\u00edrov\u00e1no!';
-        setTimeout(function () { exportJsonBtn.textContent = 'Exportovat do JSON'; }, 2000);
+        setTimeout(function () { exportJsonBtn.textContent = 'Exportovat do JSON'; }, BTN_RESET_DELAY);
       });
     });
 
@@ -3463,7 +3550,7 @@
       var lines = currentResults.map(function (r) { return recToPlaintext(r, showDate); });
       navigator.clipboard.writeText(lines.join('\n')).then(function () {
         exportTextBtn.textContent = 'Zkop\u00edrov\u00e1no!';
-        setTimeout(function () { exportTextBtn.textContent = 'Exportovat v plaintext'; }, 2000);
+        setTimeout(function () { exportTextBtn.textContent = 'Exportovat v plaintext'; }, BTN_RESET_DELAY);
       });
     });
 
@@ -3474,7 +3561,7 @@
       var ids = currentResults.map(function (r) { return r.id; });
       dbDeleteByIds(ids).then(function () {
         deleteFilteredBtn.textContent = 'Smaz\u00e1no!';
-        setTimeout(function () { deleteFilteredBtn.textContent = 'Smazat zobrazen\u00e9'; }, 2000);
+        setTimeout(function () { deleteFilteredBtn.textContent = 'Smazat zobrazen\u00e9'; }, BTN_RESET_DELAY);
         doSearch();
       });
     });
@@ -3975,6 +4062,14 @@
 
     const board = document.getElementById('board');
     if (!board) return;
+
+    // Override the native refresh() function so that dataframe.refresh()
+    // (called from infopage's countdown or our setupCountdown/startAutoRefresh)
+    // does an async fetch + DOM diff instead of a synchronous full page reload.
+    // This eliminates the ~10 s browser freeze caused by the blocking reload.
+    if (typeof window.refresh === 'function' || typeof window.refresh === 'undefined') {
+      window.refresh = asyncRefreshBoard;
+    }
 
     // Intercept clicks on whisper_to links — more reliable than overriding
     // the function across frame boundaries
