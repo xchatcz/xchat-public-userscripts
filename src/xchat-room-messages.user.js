@@ -381,6 +381,13 @@
       contentText = msgSpan.textContent.trim();
     }
 
+    // Extract font color from wrapping <font> element
+    var fontColor = '';
+    var fontEl = msgSpan.closest('font[color]');
+    if (fontEl) {
+      fontColor = fontEl.getAttribute('color');
+    }
+
     return {
       room_id: getRoomId(),
       timestamp: now,
@@ -389,7 +396,8 @@
       recipient: recipient,
       content_html: contentAfterBold,
       content_text: contentText,
-      is_whisper: is_whisper
+      is_whisper: is_whisper,
+      color: fontColor
     };
   }
 
@@ -1542,7 +1550,7 @@
                   time: timeStr,
                   nick: rec.sender,
                   text: rec.content_html || escapeHtml(rec.content_text || ''),
-                  color: isMine ? '#C87000' : '#282828',
+                  color: rec.color || (isMine ? '#C87000' : '#282828'),
                   cls: isMine ? 'whisper_out' : 'whisper_in'
                 });
                 msgEl.classList.add('xchat-fw-msg-history');
@@ -1606,7 +1614,7 @@
                 time: timeStr,
                 nick: rec.sender,
                 text: rec.content_html || escapeHtml(rec.content_text || ''),
-                color: isMine ? '#C87000' : '#282828',
+                color: rec.color || (isMine ? '#C87000' : '#282828'),
                 cls: isMine ? 'whisper_out' : 'whisper_in'
               });
               msgEl.classList.add('xchat-fw-msg-history');
@@ -1734,8 +1742,9 @@
                   // Remove residual font markers and tags
                   msgText = msgText.replace(/\x01[^\x01]*\x01/g, '').replace(/<\/font>\s*$/i, '').trim();
 
-                  // Unique key for deduplication
-                  var msgKey = time + '|' + msgNick + '|' + msgText;
+                  // Unique key for deduplication (strip HTML to match content_text from IndexedDB)
+                  var msgTextPlain = msgText.replace(/<[^>]+>/g, '').trim();
+                  var msgKey = time + '|' + msgNick + '|' + msgTextPlain;
 
                   parsedMsgs.push({
                     key: msgKey,
