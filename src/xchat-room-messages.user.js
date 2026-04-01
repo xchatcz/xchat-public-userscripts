@@ -156,6 +156,31 @@
     setFwUnread(key, 0);
   }
 
+  var FW_READ_KEYS_KEY = '_xchat_fw_read_keys';
+
+  function getReadKeys(nickKey) {
+    try {
+      var data = JSON.parse(localStorage.getItem(FW_READ_KEYS_KEY) || '{}');
+      return data[nickKey] || {};
+    } catch { return {}; }
+  }
+
+  function saveReadKeys(nickKey, keys) {
+    try {
+      var data = JSON.parse(localStorage.getItem(FW_READ_KEYS_KEY) || '{}');
+      var merged = data[nickKey] || {};
+      for (var k in keys) if (keys.hasOwnProperty(k)) merged[k] = 1;
+      var all = Object.keys(merged);
+      if (all.length > 500) {
+        var trimmed = {};
+        for (var i = all.length - 500; i < all.length; i++) trimmed[all[i]] = 1;
+        merged = trimmed;
+      }
+      data[nickKey] = merged;
+      localStorage.setItem(FW_READ_KEYS_KEY, JSON.stringify(data));
+    } catch {}
+  }
+
   function parseIdleToSeconds(idle) {
     if (!idle) return 0;
     var parts = idle.split(':');
@@ -1288,8 +1313,9 @@
       var fwRef = floatingWindows[key];
       fwRef.el.classList.remove('xchat-fw-minimized');
       if (fwRef.head) fwRef.head.classList.remove('xchat-fw-head-visible');
-      // Clear unread badge
+      // Clear unread badge and persist read keys
       updateUnreadBadge(key, 0);
+      saveReadKeys(key, fwRef.seenMsgKeys);
       // Move to front of DOM = rightmost in row-reverse layout
       var container = getFloatingContainer();
       if (fwRef.el !== container.firstChild) container.insertBefore(fwRef.el, container.firstChild);
@@ -1399,8 +1425,11 @@
       head.classList.toggle('xchat-fw-head-visible');
       // When un-minimizing, move to front of DOM = rightmost in row-reverse
       if (wasMinimized && fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
-      // Clear unread badge when un-minimizing
-      if (wasMinimized) updateUnreadBadge(key, 0);
+      // Clear unread badge when un-minimizing and persist read keys
+      if (wasMinimized) {
+        updateUnreadBadge(key, 0);
+        if (floatingWindows[key]) saveReadKeys(key, floatingWindows[key].seenMsgKeys);
+      }
       saveFloatingState();
       // When un-minimizing, ensure windows still fit and focus input
       if (wasMinimized) {
@@ -1464,8 +1493,9 @@
     head.addEventListener('click', function () {
       fw.classList.remove('xchat-fw-minimized');
       head.classList.remove('xchat-fw-head-visible');
-      // Clear unread badge
+      // Clear unread badge and persist read keys
       updateUnreadBadge(key, 0);
+      if (floatingWindows[key]) saveReadKeys(key, floatingWindows[key].seenMsgKeys);
       // Move to front of DOM = rightmost in row-reverse layout
       if (fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
       saveFloatingState();
@@ -1491,7 +1521,10 @@
     getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
-    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: {}, unreadCount: 0, openedAt: Date.now() };
+    var initialSeenKeys = {};
+    var savedReadKeys = getReadKeys(key);
+    for (var rk in savedReadKeys) if (savedReadKeys.hasOwnProperty(rk)) initialSeenKeys[rk] = true;
+    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now() };
     saveFloatingState();
 
     // Restore unread badge from localStorage (for minimized windows after page reload)
