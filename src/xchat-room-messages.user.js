@@ -133,7 +133,27 @@
   }
 
   function getFwAutoOpen() {
-    return getSetting('fwAutoOpen', false);
+    var v = getSetting('fwAutoOpen', 'none');
+    // Migrate old boolean values
+    if (v === true) return 'window';
+    if (v === false) return 'none';
+    return v;
+  }
+
+  var FW_UNREAD_KEY = '_xchat_fw_unread';
+
+  function getFwUnread() {
+    try { return JSON.parse(localStorage.getItem(FW_UNREAD_KEY) || '{}'); } catch { return {}; }
+  }
+
+  function setFwUnread(key, count) {
+    var data = getFwUnread();
+    if (count > 0) data[key] = count; else delete data[key];
+    try { localStorage.setItem(FW_UNREAD_KEY, JSON.stringify(data)); } catch {}
+  }
+
+  function clearFwUnread(key) {
+    setFwUnread(key, 0);
   }
 
   function parseIdleToSeconds(idle) {
@@ -414,14 +434,38 @@
     rec.fingerprint = msgFingerprint(rec);
     dbAdd(rec).then(function (id) {
       // id is null when the record already existed in IndexedDB (duplicate)
-      // Only auto-open for genuinely new incoming whispers
-      if (id && rec.is_whisper && rec.message_type === 'whisper' && getWhisperMode() === 'floating' && getFwAutoOpen()) {
-        var link = div.querySelector('a[href*="whisper_to"]');
-        if (link) {
-          _fwAutoOpenNoFocus = true;
-          link.click();
-          _fwAutoOpenNoFocus = false;
+      if (!id || !rec.is_whisper || rec.message_type !== 'whisper' || getWhisperMode() !== 'floating') return;
+      var autoMode = getFwAutoOpen();
+      if (autoMode === 'none') return;
+
+      // Extract nick from the whisper_to link
+      var link = div.querySelector('a[href*="whisper_to"]');
+      if (!link) return;
+      var m = (link.getAttribute('href') || '').match(/whisper_to\s*\(\s*['"]([^'"]+)['"]\s*\)/);
+      if (!m) return;
+      var senderNick = m[1];
+      var senderKey = normNick(senderNick);
+
+      // Check if window already exists and is minimized
+      if (floatingWindows[senderKey]) {
+        if (floatingWindows[senderKey].el.classList.contains('xchat-fw-minimized')) {
+          // Window is minimized — increment unread badge
+          updateUnreadBadge(senderKey, (floatingWindows[senderKey].unreadCount || 0) + 1);
         }
+        return;
+      }
+
+      // No window exists yet — open based on mode
+      if (autoMode === 'window') {
+        _fwAutoOpenNoFocus = true;
+        link.click();
+        _fwAutoOpenNoFocus = false;
+      } else if (autoMode === 'bubble') {
+        // Open as minimized bubble with badge
+        _fwAutoOpenNoFocus = true;
+        openFloatingWhisper(senderNick, true, true);
+        _fwAutoOpenNoFocus = false;
+        updateUnreadBadge(senderKey, 1);
       }
     }).catch(function () { /* silent */ });
   }
@@ -990,6 +1034,21 @@
   var floatingWindows = {}; // keyed by normalized nick
   var _fwAutoOpenNoFocus = false; // temporary flag for auto-open without focus
   var FW_STATE_KEY = '_xchat_fw_state';
+
+  function updateUnreadBadge(key, count) {
+    if (!floatingWindows[key]) return;
+    floatingWindows[key].unreadCount = count;
+    setFwUnread(key, count);
+    var badge = floatingWindows[key].headBadge;
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = count;
+      badge.classList.add('xchat-fw-head-badge-visible');
+    } else {
+      badge.textContent = '';
+      badge.classList.remove('xchat-fw-head-badge-visible');
+    }
+  }
   var FW_HISTORY_KEY = '_xchat_fw_history';
   var FW_HISTORY_MAX = 1000;
 
@@ -1229,6 +1288,8 @@
       var fwRef = floatingWindows[key];
       fwRef.el.classList.remove('xchat-fw-minimized');
       if (fwRef.head) fwRef.head.classList.remove('xchat-fw-head-visible');
+      // Clear unread badge
+      updateUnreadBadge(key, 0);
       // Move to front of DOM = rightmost in row-reverse layout
       var container = getFloatingContainer();
       if (fwRef.el !== container.firstChild) container.insertBefore(fwRef.el, container.firstChild);
@@ -1338,6 +1399,8 @@
       head.classList.toggle('xchat-fw-head-visible');
       // When un-minimizing, move to front of DOM = rightmost in row-reverse
       if (wasMinimized && fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
+      // Clear unread badge when un-minimizing
+      if (wasMinimized) updateUnreadBadge(key, 0);
       saveFloatingState();
       // When un-minimizing, ensure windows still fit and focus input
       if (wasMinimized) {
@@ -1382,6 +1445,11 @@
     });
     head.appendChild(headClose);
 
+    // Unread badge (shown at bottom-right)
+    var headBadge = document.createElement('span');
+    headBadge.className = 'xchat-fw-head-badge';
+    head.appendChild(headBadge);
+
     // Tooltip (shown on hover, to the left)
     var headTip = document.createElement('div');
     headTip.className = 'xchat-fw-head-tip';
@@ -1396,6 +1464,8 @@
     head.addEventListener('click', function () {
       fw.classList.remove('xchat-fw-minimized');
       head.classList.remove('xchat-fw-head-visible');
+      // Clear unread badge
+      updateUnreadBadge(key, 0);
       // Move to front of DOM = rightmost in row-reverse layout
       if (fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
       saveFloatingState();
@@ -1421,8 +1491,16 @@
     getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
-    floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: {}, openedAt: Date.now() };
+    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: {}, unreadCount: 0, openedAt: Date.now() };
     saveFloatingState();
+
+    // Restore unread badge from localStorage (for minimized windows after page reload)
+    if (startMinimized) {
+      var savedUnread = getFwUnread();
+      if (savedUnread[key] > 0) {
+        updateUnreadBadge(key, savedUnread[key]);
+      }
+    }
 
     // Auto-minimize oldest windows if the new one doesn't fit
     if (!startMinimized) {
@@ -1769,10 +1847,12 @@
                 }
 
                 // Add only messages not already in DOM
+                var newMsgCount = 0;
                 for (var mi = 0; mi < parsedMsgs.length; mi++) {
                   var msg = parsedMsgs[mi];
                   if (seenKeys[msg.key]) continue;
                   seenKeys[msg.key] = true;
+                  newMsgCount++;
 
                   var msgEl = createMsgEl(msg);
                   if (newestFirst) {
@@ -1782,6 +1862,11 @@
                     // Newest on bottom: append
                     msgContainer.appendChild(msgEl);
                   }
+                }
+
+                // Update unread badge if window is minimized and new messages arrived
+                if (newMsgCount > 0 && floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) {
+                  updateUnreadBadge(key, (floatingWindows[key].unreadCount || 0) + newMsgCount);
                 }
 
                 // Auto-scroll
@@ -1982,6 +2067,7 @@
       if (floatingWindows[key].pollTimer) {
         clearInterval(floatingWindows[key].pollTimer);
       }
+      clearFwUnread(key);
       floatingWindows[key].el.remove();
       if (floatingWindows[key].head) floatingWindows[key].head.remove();
       delete floatingWindows[key];
@@ -2549,16 +2635,27 @@
     // Auto-open floating windows on incoming whisper
     var fwAutoOpenRow = targetDoc.createElement('div');
     fwAutoOpenRow.style.cssText = 'margin-top: 3px;';
-    var fwAutoOpenCheckbox = targetDoc.createElement('input');
-    fwAutoOpenCheckbox.type = 'checkbox';
-    fwAutoOpenCheckbox.id = 'xchat-fw-auto-open';
-    fwAutoOpenCheckbox.checked = getFwAutoOpen();
-    fwAutoOpenRow.appendChild(fwAutoOpenCheckbox);
     var fwAutoOpenLabel = targetDoc.createElement('label');
     fwAutoOpenLabel.htmlFor = 'xchat-fw-auto-open';
-    fwAutoOpenLabel.textContent = ' Otev\u00edrat okna automaticky, kdy\u017e mi n\u011bkdo za\u0161ept\u00e1';
-    fwAutoOpenLabel.style.cssText = 'font-size: 11px; cursor: pointer;';
+    fwAutoOpenLabel.textContent = 'Kdy\u017e mi n\u011bkdo za\u0161ept\u00e1: ';
+    fwAutoOpenLabel.style.cssText = 'font-size: 11px;';
     fwAutoOpenRow.appendChild(fwAutoOpenLabel);
+    var fwAutoOpenSelect = targetDoc.createElement('select');
+    fwAutoOpenSelect.id = 'xchat-fw-auto-open';
+    fwAutoOpenSelect.style.cssText = 'font-size: 11px;';
+    var autoOpenOpts = [
+      { value: 'none', text: 'Ned\u011blat nic' },
+      { value: 'window', text: 'Otev\u0159\u00edt nov\u00e9 plovouc\u00ed okno' },
+      { value: 'bubble', text: 'Otev\u0159\u00edt bublinu s hlavou' }
+    ];
+    for (var aoi = 0; aoi < autoOpenOpts.length; aoi++) {
+      var aoOpt = targetDoc.createElement('option');
+      aoOpt.value = autoOpenOpts[aoi].value;
+      aoOpt.textContent = autoOpenOpts[aoi].text;
+      fwAutoOpenSelect.appendChild(aoOpt);
+    }
+    fwAutoOpenSelect.value = getFwAutoOpen();
+    fwAutoOpenRow.appendChild(fwAutoOpenSelect);
     modal.appendChild(fwAutoOpenRow);
 
     // Newest first toggle for floating whisper windows
@@ -2800,7 +2897,7 @@
       s.highlight = hlCheckbox.checked;
       s.showRid = ridCheckbox.checked;
       s.whisperMode = whisperSelect.value;
-      s.fwAutoOpen = fwAutoOpenCheckbox.checked;
+      s.fwAutoOpen = fwAutoOpenSelect.value;
       s.fwNewestFirst = fwOrderCheckbox.checked;
       s.fwMaxMessages = parseInt(fwMaxInput.value, 10) || 100;
       s.refreshInterval = parseInt(sel.value, 10) || 0;
@@ -3369,6 +3466,28 @@
       '}',
       '.xchat-fw-head-close:hover {',
       '  background: rgba(200,0,0,0.85);',
+      '}',
+      '.xchat-fw-head-badge {',
+      '  position: absolute;',
+      '  bottom: -4px;',
+      '  right: -4px;',
+      '  min-width: 16px;',
+      '  height: 16px;',
+      '  line-height: 16px;',
+      '  text-align: center;',
+      '  background: #e00;',
+      '  color: #fff;',
+      '  font-size: 10px;',
+      '  font-weight: bold;',
+      '  font-family: arial, sans-serif;',
+      '  border-radius: 8px;',
+      '  padding: 0 3px;',
+      '  display: none;',
+      '  z-index: 3;',
+      '  box-shadow: 0 1px 3px rgba(0,0,0,0.4);',
+      '}',
+      '.xchat-fw-head-badge-visible {',
+      '  display: block;',
       '}',
       '.xchat-fw-head-tip {',
       '  position: absolute;',
