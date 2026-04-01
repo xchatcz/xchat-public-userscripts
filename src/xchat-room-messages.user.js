@@ -1018,6 +1018,63 @@
     try { localStorage.setItem(FW_STATE_KEY, JSON.stringify(state)); } catch {}
   }
 
+  // Ensure all visible floating windows fit within the viewport.
+  // Minimizes the leftmost visible whisper window (last in DOM = leftmost in
+  // row-reverse layout) until nothing overflows. The optional protectedEl will
+  // never be minimized so the window the user just opened/maximized stays visible.
+  function ensureWindowsFit(protectedEl) {
+    var container = document.getElementById('xchat-fw-container');
+    if (!container) return;
+    var changed = false;
+
+    while (true) {
+      var visible = container.querySelectorAll('.xchat-fw:not(.xchat-fw-minimized)');
+      if (visible.length <= 1) break; // always keep at least 1 container visible
+
+      // Check if any visible window overflows the viewport (left edge < 0)
+      var overflows = false;
+      for (var vi = 0; vi < visible.length; vi++) {
+        var rect = visible[vi].getBoundingClientRect();
+        if (rect.left < 0) { overflows = true; break; }
+      }
+      if (!overflows) break;
+
+      // Find the leftmost visible whisper window to minimize.
+      // With row-reverse the last DOM child is visually leftmost.
+      // Skip launcher and the protected element.
+      var toMinimize = null;
+      for (var i = visible.length - 1; i >= 0; i--) {
+        if (visible[i] !== protectedEl && !visible[i].classList.contains('xchat-fw-launcher-win')) {
+          toMinimize = visible[i];
+          break;
+        }
+      }
+      if (!toMinimize) break;
+
+      toMinimize.classList.add('xchat-fw-minimized');
+      // Activate corresponding head bubble
+      var keys = Object.keys(floatingWindows);
+      for (var ki = 0; ki < keys.length; ki++) {
+        if (floatingWindows[keys[ki]].el === toMinimize && floatingWindows[keys[ki]].head) {
+          floatingWindows[keys[ki]].head.classList.add('xchat-fw-head-visible');
+          break;
+        }
+      }
+      changed = true;
+    }
+
+    if (changed) saveFloatingState();
+  }
+
+  // Track viewport width so we recalculate only when the window shrinks
+  var _fwLastViewportWidth = window.innerWidth;
+  window.addEventListener('resize', function () {
+    if (window.innerWidth < _fwLastViewportWidth) {
+      ensureWindowsFit();
+    }
+    _fwLastViewportWidth = window.innerWidth;
+  });
+
   function getFloatingContainer() {
     var c = document.getElementById('xchat-fw-container');
     if (c) return c;
@@ -1152,8 +1209,11 @@
     refreshLauncherHistory();
     // If already open, un-minimize
     if (floatingWindows[key]) {
-      floatingWindows[key].el.classList.remove('xchat-fw-minimized');
+      var fwRef = floatingWindows[key];
+      fwRef.el.classList.remove('xchat-fw-minimized');
+      if (fwRef.head) fwRef.head.classList.remove('xchat-fw-head-visible');
       saveFloatingState();
+      ensureWindowsFit(fwRef.el);
       return;
     }
 
@@ -1241,6 +1301,10 @@
       fw.classList.toggle('xchat-fw-minimized');
       head.classList.toggle('xchat-fw-head-visible');
       saveFloatingState();
+      // When un-minimizing, ensure windows still fit
+      if (wasMinimized) {
+        ensureWindowsFit(fw);
+      }
       // Refresh messages when maximizing
       if (wasMinimized && floatingWindows[key] && floatingWindows[key].fetchMessages) {
         floatingWindows[key].fetchMessages();
@@ -1293,6 +1357,7 @@
       fw.classList.remove('xchat-fw-minimized');
       head.classList.remove('xchat-fw-head-visible');
       saveFloatingState();
+      ensureWindowsFit(fw);
       // Refresh messages when maximizing from head
       if (floatingWindows[key] && floatingWindows[key].fetchMessages) {
         floatingWindows[key].fetchMessages();
@@ -1304,34 +1369,17 @@
       head.classList.add('xchat-fw-head-visible');
     }
 
-    // Auto-minimize oldest window if new one won't fit
-    if (!startMinimized) {
-      var winWidth = 300, winGap = 6, rightOffset = 60;
-      var visibleCount = 0;
-      var visibleEls = container.querySelectorAll('.xchat-fw:not(.xchat-fw-minimized)');
-      visibleCount = visibleEls.length; // count before adding new one
-      var neededWidth = (visibleCount + 1) * (winWidth + winGap);
-      if (neededWidth > window.innerWidth - rightOffset) {
-        // Find oldest non-launcher visible window and minimize it
-        var keys = Object.keys(floatingWindows);
-        for (var ki = 0; ki < keys.length; ki++) {
-          var fw2 = floatingWindows[keys[ki]];
-          if (fw2.el && !fw2.el.classList.contains('xchat-fw-minimized')) {
-            fw2.el.classList.add('xchat-fw-minimized');
-            if (fw2.head) fw2.head.classList.add('xchat-fw-head-visible');
-            saveFloatingState();
-            break;
-          }
-        }
-      }
-    }
-
     container.appendChild(fw);
     getHeadsSidebar().appendChild(head);
 
     // Store reference with room element for live updates
     floatingWindows[key] = { el: fw, head: head, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: {}, openedAt: Date.now() };
     saveFloatingState();
+
+    // Auto-minimize oldest windows if the new one doesn't fit
+    if (!startMinimized) {
+      ensureWindowsFit(fw);
+    }
 
     // ── Fetch frameset to extract individual frame URLs ──
     fetch(framesetUrl, { credentials: 'include' })
@@ -1917,7 +1965,7 @@
     var bubble = document.createElement('div');
     bubble.className = 'xchat-fw-head xchat-fw-head-visible xchat-fw-launcher-head';
     bubble.id = 'xchat-fw-launcher';
-    bubble.title = 'Po\u0161eptat';
+    bubble.title = 'Nov\u00e1 soukrom\u00e1 zpr\u00e1va';
 
     // Chat icon SVG
     bubble.innerHTML = '<svg class="xchat-fw-launcher-icon" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
@@ -1943,17 +1991,10 @@
 
       var headerInfo = document.createElement('div');
       headerInfo.className = 'xchat-fw-header-info';
-      var texts = document.createElement('div');
-      texts.className = 'xchat-fw-texts';
       var nickEl = document.createElement('div');
       nickEl.className = 'xchat-fw-nick';
-      nickEl.textContent = 'Po\u0161eptat';
-      texts.appendChild(nickEl);
-      var roomEl = document.createElement('div');
-      roomEl.className = 'xchat-fw-room';
-      roomEl.textContent = 'Naj\u00edt u\u017eivatele...';
-      texts.appendChild(roomEl);
-      headerInfo.appendChild(texts);
+      nickEl.textContent = 'Nov\u00e1 soukrom\u00e1 zpr\u00e1va';
+      headerInfo.appendChild(nickEl);
       header.appendChild(headerInfo);
 
       var btns = document.createElement('div');
@@ -2019,6 +2060,9 @@
 
       fw.appendChild(body);
       container.insertBefore(fw, container.firstChild);
+
+      // Ensure nothing overflows after launcher opens
+      ensureWindowsFit(fw);
 
       // Populate history
       refreshLauncherHistory();
