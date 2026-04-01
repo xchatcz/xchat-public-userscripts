@@ -2000,10 +2000,15 @@
     var bubble = document.createElement('div');
     bubble.className = 'xchat-fw-head xchat-fw-head-visible xchat-fw-launcher-head';
     bubble.id = 'xchat-fw-launcher';
-    bubble.title = 'Nov\u00e1 soukrom\u00e1 zpr\u00e1va';
 
     // Chat icon SVG
     bubble.innerHTML = '<svg class="xchat-fw-launcher-icon" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
+
+    // Tooltip (like whisper heads)
+    var launcherTip = document.createElement('div');
+    launcherTip.className = 'xchat-fw-head-tip';
+    launcherTip.textContent = 'Napsat zpr\u00e1vu';
+    bubble.appendChild(launcherTip);
 
     bubble.addEventListener('click', function () {
       // Toggle: if window exists, close it; otherwise open it
@@ -2044,6 +2049,9 @@
       });
       btns.appendChild(closeBtn);
       header.appendChild(btns);
+      header.addEventListener('click', function () {
+        closeLauncherPopup();
+      });
       fw.appendChild(header);
 
       // Body
@@ -3338,6 +3346,16 @@
       '  gap: 4px;',
       '  pointer-events: none;',
       '  box-shadow: 0 2px 8px rgba(0,0,0,0.3);',
+      '}',
+      '.xchat-fw-head-tip::after {',
+      '  content: "";',
+      '  position: absolute;',
+      '  right: -6px;',
+      '  top: 50%;',
+      '  transform: translateY(-50%);',
+      '  border: 6px solid transparent;',
+      '  border-left-color: rgba(0,0,0,0.8);',
+      '  border-right: none;',
       '}',
       '.xchat-fw-head:hover .xchat-fw-head-tip {',
       '  display: flex;',
