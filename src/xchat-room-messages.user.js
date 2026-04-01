@@ -3081,6 +3081,7 @@
       '.xchat-fw-messages {',
       '  height: 100%;',
       '  overflow-y: auto;',
+      '  overscroll-behavior: contain;',
       '  display: flex;',
       '  flex-direction: column;',
       '}',
@@ -3196,9 +3197,13 @@
     var detectedNick = getMyNick();
     if (detectedNick) setSetting('myNick', detectedNick);
 
+    // Skip floating whisper management when inside a standard whisper window (wfrom/wfromid in URL)
+    var urlParams = new URLSearchParams(location.search);
+    var isWhisperWindow = urlParams.has('wfrom') || urlParams.has('wfromid');
+
     // Skip floating whisper management when inside a floating window iframe
     // The main startframe stores its window ref on top; nested iframes see a different window
-    var isNestedStartframe = false;
+    var isNestedStartframe = isWhisperWindow;
     try {
       if (window.top._xchatFWWindow && window.top._xchatFWWindow === window) {
         // Same window reloaded — not nested, re-run setup
