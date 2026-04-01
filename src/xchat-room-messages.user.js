@@ -1212,6 +1212,9 @@
       var fwRef = floatingWindows[key];
       fwRef.el.classList.remove('xchat-fw-minimized');
       if (fwRef.head) fwRef.head.classList.remove('xchat-fw-head-visible');
+      // Move to front of DOM = rightmost in row-reverse layout
+      var container = getFloatingContainer();
+      if (fwRef.el !== container.firstChild) container.insertBefore(fwRef.el, container.firstChild);
       saveFloatingState();
       ensureWindowsFit(fwRef.el);
       // Focus the input field
@@ -1314,6 +1317,8 @@
       var wasMinimized = fw.classList.contains('xchat-fw-minimized');
       fw.classList.toggle('xchat-fw-minimized');
       head.classList.toggle('xchat-fw-head-visible');
+      // When un-minimizing, move to front of DOM = rightmost in row-reverse
+      if (wasMinimized && fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
       saveFloatingState();
       // When un-minimizing, ensure windows still fit and focus input
       if (wasMinimized) {
@@ -1372,6 +1377,8 @@
     head.addEventListener('click', function () {
       fw.classList.remove('xchat-fw-minimized');
       head.classList.remove('xchat-fw-head-visible');
+      // Move to front of DOM = rightmost in row-reverse layout
+      if (fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
       saveFloatingState();
       ensureWindowsFit(fw);
       // Focus the input field
@@ -1975,8 +1982,8 @@
       li.dataset.nick = history[i].nick;
       li.addEventListener('click', (function (n) {
         return function () {
-          openFloatingWhisper(n);
           closeLauncherPopup();
+          openFloatingWhisper(n);
         };
       })(history[i].nick));
       launcherHistoryList.appendChild(li);
@@ -2064,9 +2071,8 @@
       function submitNick() {
         var val = input.value.trim();
         if (!val) return;
-        openFloatingWhisper(val);
-        input.value = '';
         closeLauncherPopup();
+        openFloatingWhisper(val);
       }
 
       confirmBtn.addEventListener('click', function (e) {
