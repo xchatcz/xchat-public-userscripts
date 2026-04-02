@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.0
+// @version      1.1.1
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -317,6 +317,9 @@
           var lo = filters.date_from || new Date(0);
           var hi = filters.date_to || new Date(9999, 0);
           cursorReq = idx3.openCursor(IDBKeyRange.bound(lo, hi));
+        } else if (typeof filters.is_whisper === 'boolean') {
+          var idx4 = store.index('is_whisper');
+          cursorReq = idx4.openCursor(IDBKeyRange.only(filters.is_whisper));
         } else {
           cursorReq = store.openCursor();
         }
@@ -576,9 +579,14 @@
         'Pragma': 'no-cache'
       }
     })
-      .then(function (r) { return r.arrayBuffer(); })
-      .then(function (buf) {
-        var html = new TextDecoder('iso-8859-2').decode(buf);
+      .then(function (r) {
+        // Force iso-8859-2 decoding asynchronously via stream re-wrap
+        // (avoids synchronous TextDecoder.decode() blocking the main thread)
+        return new Response(r.body, {
+          headers: { 'Content-Type': 'text/html; charset=iso-8859-2' }
+        }).text();
+      })
+      .then(function (html) {
         console.log('[xchat-perf] F (board-refresh) ' + (performance.now() - _t0).toFixed(1) + 'ms');
 
         var doc = new DOMParser().parseFromString(html, 'text/html');
@@ -634,34 +642,30 @@
     var metas = document.querySelectorAll('meta[http-equiv="refresh"]');
     for (var i = 0; i < metas.length; i++) metas[i].remove();
 
-    // (b) Kill all existing timers set by native startframe JS.
-    // We clear the highest known timer ID. This is aggressive but safe
-    // because our userscript runs at document-end, AFTER native scripts,
-    // and we set up our own timers AFTER this call.
+    // (b) Kill recently-created timers set by native startframe JS.
+    // Only clear a window of the last 500 IDs to avoid a very long blocking
+    // loop when the browser-global timer counter is high (long sessions).
     var highWater = setTimeout(function () {}, 0);
-    for (var tid = 1; tid <= highWater; tid++) {
+    var startTid = Math.max(1, highWater - 500);
+    for (var tid = startTid; tid <= highWater; tid++) {
       clearTimeout(tid);
       clearInterval(tid);
     }
 
-    // (d) Intercept location.reload() on this window.
-    // The native refresh() function almost certainly calls location.reload().
-    // Even if a native timer captured the old refresh() reference before our
-    // override, the actual reload still goes through location.reload — we catch
-    // it here and redirect to our non-blocking async refresh.
-    Object.defineProperty(location, 'reload', {
-      configurable: true,
-      value: function () {
-        console.log('[xchat] intercepted location.reload → asyncRefreshBoard');
-        asyncRefreshBoard();
-      }
-    });
-
-    // (a) Override the global refresh function
-    window.refresh = asyncRefreshBoard;
-
-    // Expose on top for cross-frame access
-    try { window.top._xchatAsyncRefreshBoard = asyncRefreshBoard; } catch {};
+    // (d) Intercept location.reload() on this window (best-effort).
+    // In origin-keyed agent clusters, location.reload is not configurable;
+    // the override silently fails — other mechanisms still cover the refresh.
+    try {
+      Object.defineProperty(location, 'reload', {
+        configurable: true,
+        value: function () {
+          console.log('[xchat] intercepted location.reload → asyncRefreshBoard');
+          asyncRefreshBoard();
+        }
+      });
+    } catch {
+      // Cannot redefine location.reload — rely on window.refresh override.
+    }
   }
 
   function findOriginalForm() {
@@ -736,9 +740,7 @@
     });
 
     // Fallback cleanup if load never fires.
-    console.log('[xchat] SEND_CLEANUP_DELAY START (sendMessage)');
     setTimeout(function () {
-      console.log('[xchat] SEND_CLEANUP_DELAY STOP (sendMessage)');
       fakeForm.remove();
       iframe.remove();
     }, SEND_CLEANUP_DELAY);
@@ -1426,20 +1428,24 @@
   function fetchWonline(nick) {
     var url = 'https://scripts.xchat.cz/scripts/wonline.php?nick=' + encodeURIComponent(nick);
     var t0 = performance.now();
-    return fetch(url).then(function (r) { return r.text(); })
-      .catch(function () {
-        // CORS fallback via GM_xmlhttpRequest
-        if (typeof GM_xmlhttpRequest !== 'function') return '';
-        return new Promise(function (resolve) {
-          GM_xmlhttpRequest({
-            method: 'GET',
-            url: url,
-            onload: function (resp) { resolve(resp.responseText || ''); },
-            onerror: function () { resolve(''); },
-            ontimeout: function () { resolve(''); }
-          });
+    // Prefer GM_xmlhttpRequest (bypasses CORS) over fetch (which always fails cross-origin)
+    var dataPromise;
+    if (typeof GM_xmlhttpRequest === 'function') {
+      dataPromise = new Promise(function (resolve) {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: url,
+          timeout: 10000,
+          onload: function (resp) { resolve(resp.responseText || ''); },
+          onerror: function () { resolve(''); },
+          ontimeout: function () { resolve(''); }
         });
-      })
+      });
+    } else {
+      dataPromise = fetch(url).then(function (r) { return r.text(); })
+        .catch(function () { return ''; });
+    }
+    return dataPromise
       .then(function (text) {
         console.log('[xchat-perf] A (wonline) ' + (performance.now() - t0).toFixed(1) + 'ms');
         if (!text) { return { online: false, rooms: [] }; }
@@ -1973,10 +1979,15 @@
                 'Pragma': 'no-cache'
               }
             })
-              .then(function (r2) { return r2.arrayBuffer(); })
-              .then(function (buf) {
+              .then(function (r2) {
+                // Force iso-8859-2 decoding asynchronously via stream re-wrap
+                return new Response(r2.body, {
+                  headers: { 'Content-Type': 'text/html; charset=iso-8859-2' }
+                }).text();
+              })
+              .then(function (rfHtmlRaw) {
                 console.log('[xchat-perf] C (messages/' + key + ') ' + (performance.now() - _t0C).toFixed(1) + 'ms');
-                return new TextDecoder('iso-8859-2').decode(buf);
+                return rfHtmlRaw;
               })
               .then(function (rfHtml) {
                 if (!floatingWindows[key]) return;
@@ -2253,8 +2264,7 @@
               setTimeout(function () { fwd.fetchMessages(); }, SEND_FETCH_DELAY);
             }
           });
-          console.log('[xchat] SEND_CLEANUP_DELAY START (floatingWhisper)');
-          setTimeout(function () { console.log('[xchat] SEND_CLEANUP_DELAY STOP (floatingWhisper)'); fakeForm.remove(); hIframe.remove(); }, SEND_CLEANUP_DELAY);
+          setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, SEND_CLEANUP_DELAY);
         };
         fwInput.addEventListener('keydown', function (e) {
           if (e.key === 'Enter') { e.preventDefault(); doSend(); }
@@ -4114,8 +4124,16 @@
         // Same window reloaded — not nested, re-run setup
         isNestedStartframe = false;
       } else if (window.top._xchatFWWindow) {
-        // Different window — nested iframe
-        isNestedStartframe = true;
+        // Different window — check if old window is still alive (has a board).
+        // If the startframe navigated (room switch etc.), the old reference is stale
+        // and we must take over as the main startframe.
+        try {
+          var oldBoard = window.top._xchatFWWindow.document.getElementById('board');
+          isNestedStartframe = !!oldBoard;
+        } catch (ex) {
+          // Can't access old window (closed/navigated/cross-origin) — we're the main one
+          isNestedStartframe = false;
+        }
       }
       if (!isNestedStartframe) window.top._xchatFWWindow = window;
     } catch {}
@@ -4148,10 +4166,18 @@
     // Lock the URL for async refresh before killing timers
     _boardRefreshUrl = location.href;
 
-    // Kill ALL native refresh mechanisms (meta refresh, timers, refresh function)
-    // and replace with our async fetch + DOM diff approach.
-    // This MUST be called before we set up our own MutationObserver and timers.
-    killNativeRefreshTimers();
+    // Kill native refresh mechanisms (meta refresh, timers) and replace with
+    // our async fetch + DOM diff approach.  Wrapped in try-catch so that the
+    // click handler and MutationObserver below are always installed even if
+    // killNativeRefreshTimers encounters an unexpected error.
+    try { killNativeRefreshTimers(); } catch (e) {
+      console.warn('[xchat] killNativeRefreshTimers error (non-fatal):', e);
+    }
+
+    // (a) Override the global refresh function — always, regardless of whether
+    // location.reload override succeeded.
+    window.refresh = asyncRefreshBoard;
+    try { window.top._xchatAsyncRefreshBoard = asyncRefreshBoard; } catch {}
 
     // Intercept clicks on whisper_to links — more reliable than overriding
     // the function across frame boundaries
@@ -4196,6 +4222,10 @@
     });
 
     observer.observe(board, { childList: true });
+
+    // Kick off an immediate async refresh so the board is populated right away
+    // (the native JS timer that would have done this was cleared above).
+    asyncRefreshBoard();
   }
 
   // ── Boot ──
