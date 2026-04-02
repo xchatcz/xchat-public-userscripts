@@ -317,9 +317,6 @@
           var lo = filters.date_from || new Date(0);
           var hi = filters.date_to || new Date(9999, 0);
           cursorReq = idx3.openCursor(IDBKeyRange.bound(lo, hi));
-        } else if (typeof filters.is_whisper === 'boolean') {
-          var idx4 = store.index('is_whisper');
-          cursorReq = idx4.openCursor(IDBKeyRange.only(filters.is_whisper));
         } else {
           cursorReq = store.openCursor();
         }
@@ -579,12 +576,9 @@
         'Pragma': 'no-cache'
       }
     })
-      .then(function (r) {
-        // Force iso-8859-2 decoding asynchronously via stream re-wrap
-        // (avoids synchronous TextDecoder.decode() blocking the main thread)
-        return new Response(r.body, {
-          headers: { 'Content-Type': 'text/html; charset=iso-8859-2' }
-        }).text();
+      .then(function (r) { return r.arrayBuffer(); })
+      .then(function (buf) {
+        return new TextDecoder('iso-8859-2').decode(buf);
       })
       .then(function (html) {
         console.log('[xchat-perf] F (board-refresh) ' + (performance.now() - _t0).toFixed(1) + 'ms');
@@ -603,6 +597,9 @@
 
         // Build fingerprint set of new divs (clean textContent — not yet processed)
         var newDivs = newBoard.querySelectorAll(':scope > div');
+        // Safety: if the fetched board has no divs (error page, loading page, etc.),
+        // don't wipe the existing board content.
+        if (newDivs.length === 0) return;
         var newKeys = {};
         for (var j = 0; j < newDivs.length; j++) {
           newKeys[newDivs[j].textContent] = true;
@@ -638,23 +635,26 @@
   //   c) <meta http-equiv="refresh" content="N">
   // We disable all three and replace with asyncRefreshBoard.
   function killNativeRefreshTimers() {
-    // (c) Remove <meta http-equiv="refresh">
+    // (c) Remove <meta http-equiv="refresh"> to prevent periodic full-page reloads.
     var metas = document.querySelectorAll('meta[http-equiv="refresh"]');
     for (var i = 0; i < metas.length; i++) metas[i].remove();
 
-    // (b) Kill recently-created timers set by native startframe JS.
-    // Only clear a window of the last 500 IDs to avoid a very long blocking
-    // loop when the browser-global timer counter is high (long sessions).
+    // Cancel any browser-level meta-refresh navigation already scheduled.
+    // window.stop() cancels pending navigations but also pending resource loads
+    // (images).  At document-end the DOM and scripts are fully loaded; only
+    // decorative images (smileys) may still be in flight — an acceptable trade-off.
+    try { window.stop(); } catch {}
+
+    // (b) Kill ALL existing timers set by native startframe JS.
+    // Per-window timer IDs start at 1 in each new document, so highWater is
+    // typically small (<50) and the loop is fast.
     var highWater = setTimeout(function () {}, 0);
-    var startTid = Math.max(1, highWater - 500);
-    for (var tid = startTid; tid <= highWater; tid++) {
+    for (var tid = 1; tid <= highWater; tid++) {
       clearTimeout(tid);
       clearInterval(tid);
     }
 
     // (d) Intercept location.reload() on this window (best-effort).
-    // In origin-keyed agent clusters, location.reload is not configurable;
-    // the override silently fails — other mechanisms still cover the refresh.
     try {
       Object.defineProperty(location, 'reload', {
         configurable: true,
@@ -664,8 +664,24 @@
         }
       });
     } catch {
-      // Cannot redefine location.reload — rely on window.refresh override.
+      // Cannot redefine location.reload — rely on window.refresh override
+      // + timer killing above.
     }
+
+    // (a) Lock window.refresh with a setter trap so native onload handlers
+    // cannot reassign it back to the original (which calls location.reload).
+    try {
+      Object.defineProperty(window, 'refresh', {
+        get: function () { return asyncRefreshBoard; },
+        set: function () { /* block native reassignment */ },
+        configurable: true,
+        enumerable: true
+      });
+    } catch {}
+
+    // Expose on top for cross-frame access (infopage countdown uses this)
+    try { window.top._xchatAsyncRefreshBoard = asyncRefreshBoard; } catch {}
+
   }
 
   function findOriginalForm() {
@@ -1979,11 +1995,9 @@
                 'Pragma': 'no-cache'
               }
             })
-              .then(function (r2) {
-                // Force iso-8859-2 decoding asynchronously via stream re-wrap
-                return new Response(r2.body, {
-                  headers: { 'Content-Type': 'text/html; charset=iso-8859-2' }
-                }).text();
+              .then(function (r2) { return r2.arrayBuffer(); })
+              .then(function (buf) {
+                return new TextDecoder('iso-8859-2').decode(buf);
               })
               .then(function (rfHtmlRaw) {
                 console.log('[xchat-perf] C (messages/' + key + ') ' + (performance.now() - _t0C).toFixed(1) + 'ms');
@@ -4138,6 +4152,18 @@
       if (!isNestedStartframe) window.top._xchatFWWindow = window;
     } catch {}
 
+    const board = document.getElementById('board');
+    if (!board) return;
+
+    // Lock the URL for async refresh before killing timers
+    _boardRefreshUrl = location.href;
+
+    // Kill native refresh mechanisms BEFORE opening floating whisper windows,
+    // so that our timer clearing doesn't destroy whisper polling timers.
+    try { killNativeRefreshTimers(); } catch (e) {
+      console.warn('[xchat] killNativeRefreshTimers error (non-fatal):', e);
+    }
+
     if (!isNestedStartframe) {
       // Floating whisper windows
       injectFloatingStyles();
@@ -4159,25 +4185,6 @@
         }
       }
     }
-
-    const board = document.getElementById('board');
-    if (!board) return;
-
-    // Lock the URL for async refresh before killing timers
-    _boardRefreshUrl = location.href;
-
-    // Kill native refresh mechanisms (meta refresh, timers) and replace with
-    // our async fetch + DOM diff approach.  Wrapped in try-catch so that the
-    // click handler and MutationObserver below are always installed even if
-    // killNativeRefreshTimers encounters an unexpected error.
-    try { killNativeRefreshTimers(); } catch (e) {
-      console.warn('[xchat] killNativeRefreshTimers error (non-fatal):', e);
-    }
-
-    // (a) Override the global refresh function — always, regardless of whether
-    // location.reload override succeeded.
-    window.refresh = asyncRefreshBoard;
-    try { window.top._xchatAsyncRefreshBoard = asyncRefreshBoard; } catch {}
 
     // Intercept clicks on whisper_to links — more reliable than overriding
     // the function across frame boundaries
@@ -4223,9 +4230,21 @@
 
     observer.observe(board, { childList: true });
 
-    // Kick off an immediate async refresh so the board is populated right away
-    // (the native JS timer that would have done this was cleared above).
-    asyncRefreshBoard();
+    // Kill timers created by native onload handlers (which run AFTER
+    // document-end).  postInitMark is set here — AFTER all our own timers
+    // (floating whisper polling, MutationObserver, etc.) are already created,
+    // so the load-event clearing only targets native timers.
+    var postInitMark = setTimeout(function () {}, 0);
+    window.addEventListener('load', function () {
+      var hw2 = setTimeout(function () {}, 0);
+      for (var t = postInitMark + 1; t <= hw2; t++) {
+        clearTimeout(t);
+        clearInterval(t);
+      }
+      // Also remove any meta refresh re-added by native code
+      var m2 = document.querySelectorAll('meta[http-equiv="refresh"]');
+      for (var j = 0; j < m2.length; j++) m2[j].remove();
+    });
   }
 
   // ── Boot ──
