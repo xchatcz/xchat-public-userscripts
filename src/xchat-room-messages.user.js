@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.1
+// @version      1.1.3
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -1346,6 +1346,8 @@
       if (fwRef.el !== container.firstChild) container.insertBefore(fwRef.el, container.firstChild);
       saveFloatingState();
       ensureWindowsFit(fwRef.el);
+      // Lazy-load content if not yet loaded
+      if (!fwRef.loaded && fwRef.loadContent) fwRef.loadContent();
       // Focus the input field (only for manual opens)
       if (!noFocus) {
         var inp = fwRef.el.querySelector('.xchat-fw-input');
@@ -1462,9 +1464,13 @@
         var inp = fw.querySelector('.xchat-fw-input');
         if (inp) setTimeout(function () { inp.focus(); }, 50);
       }
-      // Refresh messages when maximizing
-      if (wasMinimized && floatingWindows[key] && floatingWindows[key].fetchMessages) {
-        floatingWindows[key].fetchMessages();
+      // Lazy-load content if not yet loaded, or refresh messages
+      if (wasMinimized && floatingWindows[key]) {
+        if (!floatingWindows[key].loaded && floatingWindows[key].loadContent) {
+          floatingWindows[key].loadContent();
+        } else if (floatingWindows[key].fetchMessages) {
+          floatingWindows[key].fetchMessages();
+        }
       }
     });
     fw.appendChild(header);
@@ -1528,9 +1534,13 @@
       // Focus the input field
       var inp = fw.querySelector('.xchat-fw-input');
       if (inp) setTimeout(function () { inp.focus(); }, 50);
-      // Refresh messages when maximizing from head
-      if (floatingWindows[key] && floatingWindows[key].fetchMessages) {
-        floatingWindows[key].fetchMessages();
+      // Lazy-load content if not yet loaded, or refresh messages
+      if (floatingWindows[key]) {
+        if (!floatingWindows[key].loaded && floatingWindows[key].loadContent) {
+          floatingWindows[key].loadContent();
+        } else if (floatingWindows[key].fetchMessages) {
+          floatingWindows[key].fetchMessages();
+        }
       }
     });
 
@@ -1549,7 +1559,7 @@
     var initialSeenKeys = {};
     var savedReadKeys = getReadKeys(key);
     for (var rk in savedReadKeys) if (savedReadKeys.hasOwnProperty(rk)) initialSeenKeys[rk] = true;
-    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now() };
+    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false };
     saveFloatingState();
 
     // Restore unread badge from localStorage (for minimized windows after page reload)
@@ -1566,7 +1576,10 @@
     }
 
     // ── Fetch frameset to extract individual frame URLs ──
-    fetch(framesetUrl, { credentials: 'include' })
+    var loadContent = function () {
+      if (floatingWindows[key] && floatingWindows[key].loaded) return;
+      if (floatingWindows[key]) floatingWindows[key].loaded = true;
+      fetch(framesetUrl, { credentials: 'include' })
       .then(function (r) { return r.text(); })
       .then(function (html) {
         // DOMParser discards <frame> tags, so parse with regex
@@ -1925,6 +1938,12 @@
                   }
                 }
 
+                // Trim seenMsgKeys to prevent unbounded memory growth
+                var allSeenKeys = Object.keys(seenKeys);
+                if (allSeenKeys.length > 500) {
+                  allSeenKeys.slice(0, allSeenKeys.length - 500).forEach(function (k) { delete seenKeys[k]; });
+                }
+
                 // Update unread badge if window is minimized and new messages arrived
                 if (newMsgCount > 0 && floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) {
                   updateUnreadBadge(key, (floatingWindows[key].unreadCount || 0) + newMsgCount);
@@ -1988,8 +2007,9 @@
           fetchAndUpdateMessages();
           fetchAndUpdateRooms();
 
-          // Periodic polling (5 seconds)
+          // Periodic polling (5 seconds) — skip minimized windows to save resources
           var pollInterval = function () {
+            if (floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) return;
             fetchAndUpdateMessages();
             fetchAndUpdateRooms();
           };
@@ -2121,6 +2141,11 @@
         // Fallback: show error in body
         body.textContent = 'Nepoda\u0159ilo se na\u010d\u00edst \u0161ept.';
       });
+    };
+    if (floatingWindows[key]) floatingWindows[key].loadContent = loadContent;
+    if (!startMinimized) {
+      loadContent();
+    }
   }
 
   function closeFloatingWhisper(key) {
@@ -3923,14 +3948,19 @@
         createLauncherBubble();
       }
 
-      // Restore previously open floating whisper windows
+      // Restore previously open floating whisper windows (sequentially to avoid
+      // flooding the connection pool with 12× parallel fetch cascades)
       if (getWhisperMode() === 'floating') {
         var savedState = getFloatingState();
-        for (var sk in savedState) {
-          if (savedState.hasOwnProperty(sk)) {
-            openFloatingWhisper(savedState[sk].nick, savedState[sk].minimized);
-          }
+        var savedKeys = Object.keys(savedState);
+        var fwIdx = 0;
+        function openNextFW() {
+          if (fwIdx >= savedKeys.length) return;
+          var sk = savedKeys[fwIdx++];
+          openFloatingWhisper(savedState[sk].nick, savedState[sk].minimized);
+          setTimeout(openNextFW, 300);
         }
+        openNextFW();
       }
     }
 
