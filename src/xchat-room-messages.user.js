@@ -35,6 +35,59 @@
   var KICK_HIGHLIGHT_CSS = '.systemtext:has(.system.kicked), .systemtext:has(.system.killed) { background: #fcc !important; color: #900 !important; }';
   var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
 
+  // ══════════════════════════════════════════════════════════════════
+  // ── Registr intervalů (timery) ──
+  // Každý interval lze zapnout/vypnout přes enabled: true/false.
+  // ══════════════════════════════════════════════════════════════════
+  var TIMERS = {
+    // setInterval(5000) – polling whisper zpráv v každém otevřeném FW okně
+    // Callback: fetchAndUpdateMessages() → fetch roomtopng, parse HTML, update DOM
+    // Přeskakuje minimalizovaná okna.
+    fwMessagesPoll:    { enabled: true, intervalMs: 5000,  description: 'Polling zpráv v plovoucích whisper oknech' },
+
+    // setInterval(60000) – polling online stavu uživatele (wonline.php)
+    // Callback: fetchAndUpdateRooms() → GM_xmlhttpRequest na scripts.xchat.cz
+    // Přeskakuje minimalizovaná okna.
+    fwOnlineStatusPoll: { enabled: true, intervalMs: 60000, description: 'Polling online stavu přes wonline.php' },
+
+    // setInterval(1000) – countdown/auto-refresh skla (v infopage)
+    // Callback: aktualizuje odpočet a volá dataframe.refresh() když counter=0
+    // Aktivní jen když refreshInterval > 0 v nastavení.
+    countdownRefresh:  { enabled: true, description: 'Odpočet a auto-refresh skla (nastavitelný interval)' },
+  };
+
+  // ══════════════════════════════════════════════════════════════════
+  // ── Registr síťových požadavků ──
+  // Každý požadavek lze vypnout přes enabled: false pro diagnostiku.
+  // ══════════════════════════════════════════════════════════════════
+  var NETWORK = {
+    // fetch() – jednorázový při otevření FW okna
+    // URL: /modchat?op=whisperingframeset&rid={rid}&wfrom={nick}
+    fwFrameset:   { enabled: true, description: 'Načtení framesetu whisper okna (jednorázový)' },
+
+    // fetch() – polling každých fwMessagesPoll.intervalMs ms
+    // URL: /modchat?op=roomtopng&...&js=0&fake={timestamp}
+    fwMessages:   { enabled: true, description: 'Polling whisper zpráv (roomtopng)' },
+
+    // fetch() – jednorázový při otevření FW okna
+    // URL: /modchat?op=textpageng&...
+    fwTextpage:   { enabled: true, description: 'Načtení formuláře pro odesílání (jednorázový)' },
+
+    // fetch() – jednorázový při otevření FW okna
+    // URL: /modchat?op=whisperuserpage&...
+    fwUserpage:   { enabled: true, description: 'Načtení ikon uživatele (jednorázový)' },
+
+    // GM_xmlhttpRequest – polling každých fwOnlineStatusPoll.intervalMs ms
+    // URL: https://scripts.xchat.cz/scripts/wonline.php?nick={nick}
+    fwWonline:    { enabled: true, description: 'Online status uživatele (cross-origin, GM_xmlhttpRequest)' },
+
+    // IndexedDB – zápis při každém novém div na boardu
+    idbWrite:     { enabled: true, description: 'Ukládání zpráv do IndexedDB' },
+
+    // IndexedDB – čtení při otevření FW okna
+    idbHistoryRead: { enabled: true, description: 'Načítání historie z IndexedDB pro FW okna' },
+  };
+
   var HIGHLIGHT_CSS = [
     '.umsg_room .umsg_hmynick',
     '.umsg_roomi .umsg_hmynick',
@@ -473,7 +526,7 @@
   function captureDiv(div) {
     if (div.dataset.xchatHistCaptured) return;
     div.dataset.xchatHistCaptured = '1';
-    if (!isHistoryEnabled()) return;
+    if (!isHistoryEnabled() || !NETWORK.idbWrite.enabled) return;
     var rec = parseBoardDiv(div);
     if (!rec) return;
     rec.fingerprint = msgFingerprint(rec);
@@ -1579,6 +1632,7 @@
     var loadContent = function () {
       if (floatingWindows[key] && floatingWindows[key].loaded) return;
       if (floatingWindows[key]) floatingWindows[key].loaded = true;
+      if (!NETWORK.fwFrameset.enabled) return;
       fetch(framesetUrl, { credentials: 'include' })
       .then(function (r) { return r.text(); })
       .then(function (html) {
@@ -1664,6 +1718,7 @@
 
           // ── Load initial messages from IndexedDB history ──
           var loadHistoryFromDB = function () {
+            if (!NETWORK.idbHistoryRead.enabled) return Promise.resolve();
             var origNick = floatingWindows[key] ? floatingWindows[key].origNick : nick;
             var normKey = normNick(origNick);
             return dbQuery({ is_whisper: true }).then(function (results) {
@@ -1819,6 +1874,7 @@
 
           var fetchAndUpdateMessages = function () {
             if (!floatingWindows[key]) return; // window was closed
+            if (!NETWORK.fwMessages.enabled) return;
 
             fetch(buildFetchUrl(), {
               method: 'GET',
@@ -1964,6 +2020,7 @@
           // ── Fetch remote user's online status from wonline.php ──
           var fetchAndUpdateRooms = function () {
             if (!floatingWindows[key]) return;
+            if (!NETWORK.fwWonline.enabled) return;
             fetchWonline(floatingWindows[key].origNick).then(function (result) {
               if (!floatingWindows[key]) return;
               roomEl.innerHTML = '';
@@ -2007,19 +2064,31 @@
           fetchAndUpdateMessages();
           fetchAndUpdateRooms();
 
-          // Periodic polling (5 seconds) — skip minimized windows to save resources
-          var pollInterval = function () {
-            if (floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) return;
-            fetchAndUpdateMessages();
-            fetchAndUpdateRooms();
-          };
-          var pollTimer = setInterval(pollInterval, 5000);
-          floatingWindows[key].pollTimer = pollTimer;
+          // Periodický polling zpráv — přeskakuje minimalizovaná okna
+          var msgPollTimer = null;
+          if (TIMERS.fwMessagesPoll.enabled) {
+            msgPollTimer = setInterval(function () {
+              if (floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) return;
+              fetchAndUpdateMessages();
+            }, TIMERS.fwMessagesPoll.intervalMs);
+          }
+
+          // Periodický polling online stavu — přeskakuje minimalizovaná okna
+          var onlinePollTimer = null;
+          if (TIMERS.fwOnlineStatusPoll.enabled) {
+            onlinePollTimer = setInterval(function () {
+              if (floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) return;
+              fetchAndUpdateRooms();
+            }, TIMERS.fwOnlineStatusPoll.intervalMs);
+          }
+
+          floatingWindows[key].msgPollTimer = msgPollTimer;
+          floatingWindows[key].onlinePollTimer = onlinePollTimer;
           floatingWindows[key].fetchMessages = fetchAndUpdateMessages;
         }
 
         // ── Fetch textpage form data for sending ──
-        if (textpageUrl) {
+        if (textpageUrl && NETWORK.fwTextpage.enabled) {
           fetch(textpageUrl, { credentials: 'include' })
             .then(function (r3) { return r3.text(); })
             .then(function (tpHtml) {
@@ -2107,7 +2176,7 @@
         }
 
         // Fetch userpage for status icons (skip photos and smileys)
-        if (userpageUrl) {
+        if (userpageUrl && NETWORK.fwUserpage.enabled) {
           fetch(userpageUrl, { credentials: 'include' })
             .then(function (r2) { return r2.text(); })
             .then(function (upHtml) {
@@ -2150,8 +2219,11 @@
 
   function closeFloatingWhisper(key) {
     if (floatingWindows[key]) {
-      if (floatingWindows[key].pollTimer) {
-        clearInterval(floatingWindows[key].pollTimer);
+      if (floatingWindows[key].msgPollTimer) {
+        clearInterval(floatingWindows[key].msgPollTimer);
+      }
+      if (floatingWindows[key].onlinePollTimer) {
+        clearInterval(floatingWindows[key].onlinePollTimer);
       }
       clearFwUnread(key);
       floatingWindows[key].el.remove();
@@ -2541,6 +2613,7 @@
     var refreshEl = document.getElementById('refresh') || document.getElementById('refresh-orig');
 
     if (!customSec || !refreshEl) return;
+    if (!TIMERS.countdownRefresh.enabled) return;
 
     // Find the parent text around <strong id="refresh"> (e.g. "obnovení: <strong>5</strong>")
     var parentNode = refreshEl.parentNode;
@@ -3020,23 +3093,6 @@
     });
 
     targetDoc.body.appendChild(overlay);
-  }
-
-  // ── Auto-refresh ──
-
-  var autoRefreshTimer = null;
-
-  function startAutoRefresh() {
-    if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-    var sec = getRefreshInterval();
-    if (!sec) return;
-    autoRefreshTimer = setInterval(function () {
-      try {
-        if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
-          window.top.roomframe.dataframe.refresh();
-        }
-      } catch {}
-    }, sec * 1000);
   }
 
   // ── History page ──
