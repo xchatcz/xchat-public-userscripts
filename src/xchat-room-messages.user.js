@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.3
+// @version      1.1.4
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -33,12 +33,16 @@
   const KICK_HIGHLIGHT_STYLE_ID = 'xchat-board-kick-highlight';
   const BAD_CMD_STYLE_ID = 'xchat-board-hide-badcmd';
   var KICK_HIGHLIGHT_CSS = '.xchat-kick-highlight { background: #fcc !important; color: #900 !important; }';
-  var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
+  var REFRESH_OPTIONS = [5, 10, 15];
   var BOARD_PROCESS_BATCH_SIZE = 12;
   var IDLE_DB_TIMEOUT_MS = 1000;
   var ROOM_BOARD_MAX_KEYS = 250;
   var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
   var XCHAT_HTML_JOB_GAP_MS = 250;
+  var FW_USER_ICON_CACHE_KEY = '_xchat_fw_user_icons';
+  var FW_USER_ICON_CACHE_TTL_MS = 60000;
+  var NATIVE_REFRESH_KILL_RETRY_MS = 500;
+  var NATIVE_REFRESH_KILL_MAX_ATTEMPTS = 20;
   var xchatHtmlJobQueue = [];
   var xchatHtmlJobActive = false;
   var xchatHtmlJobTimer = null;
@@ -233,7 +237,8 @@
   }
 
   function getRefreshInterval() {
-    return getSetting('refreshInterval', 0);
+    var value = parseInt(getSetting('refreshInterval', 5), 10) || 5;
+    return Math.max(5, value);
   }
 
   function getWhisperMode() {
@@ -296,6 +301,30 @@
       data[nickKey] = merged;
       localStorage.setItem(FW_READ_KEYS_KEY, JSON.stringify(data));
     } catch {}
+  }
+
+  function getFwUserIconCache() {
+    try { return JSON.parse(localStorage.getItem(FW_USER_ICON_CACHE_KEY) || '{}'); } catch { return {}; }
+  }
+
+  function saveFwUserIconCache(cache) {
+    try { localStorage.setItem(FW_USER_ICON_CACHE_KEY, JSON.stringify(cache)); } catch {}
+  }
+
+  function getCachedUserIconSources(key) {
+    var cache = getFwUserIconCache();
+    var entry = cache[key];
+    if (!entry || !Array.isArray(entry.sources)) return null;
+    return entry;
+  }
+
+  function cacheUserIconSources(key, sources) {
+    var cache = getFwUserIconCache();
+    cache[key] = {
+      updatedAt: Date.now(),
+      sources: sources
+    };
+    saveFwUserIconCache(cache);
   }
 
   function parseIdleToSeconds(idle) {
@@ -827,7 +856,13 @@
     if (!currentHref) return;
 
     var previous = window.top._xchatLightBoardRefreshState;
-    if (previous && previous.ownerWindow === window && previous.dataFrame === frames.dataFrame) return;
+    if (previous && previous.ownerWindow === window && previous.dataFrame === frames.dataFrame) {
+      previous.intervalMs = getRefreshInterval() * 1000;
+      previous.countdown = getRefreshInterval();
+      updateMainBoardCountdown(previous, true);
+      scheduleMainBoardRefresh(previous);
+      return;
+    }
     stopMainBoardRefresh(previous);
 
     var baseUrl = new URL(currentHref);
@@ -846,8 +881,8 @@
       board: frames.board,
       baseUrl: baseUrl,
       lastLine: lastLine,
-      intervalMs: TIMERS.mainBoardPoll.intervalMs,
-      countdown: Math.max(1, Math.round(TIMERS.mainBoardPoll.intervalMs / 1000)),
+      intervalMs: getRefreshInterval() * 1000,
+      countdown: getRefreshInterval(),
       recentBoardKeys: {},
       recentBoardKeyOrder: [],
       refreshTimer: null,
@@ -871,8 +906,15 @@
       if (metaRefresh) metaRefresh.remove();
     } catch {}
 
+    try {
+      if (frames.dataFrame.document && frames.dataFrame.document.body) {
+        frames.dataFrame.document.body.removeAttribute('onload');
+      }
+    } catch {}
     try { frames.dataFrame.refresh = function () {}; } catch {}
     try { frames.dataFrame.doLoad = function () {}; } catch {}
+    try { frames.dataFrame.window.refresh = function () {}; } catch {}
+    try { frames.dataFrame.window.doLoad = function () {}; } catch {}
     try {
       if (window.top.cID) {
         clearInterval(window.top.cID);
@@ -888,6 +930,18 @@
     }, 1000);
 
     scheduleMainBoardRefresh(state);
+  }
+
+  function ensureLightweightMainBoardRefreshInstalled(attempt) {
+    var tryCount = attempt || 0;
+    if (getMainBoardFrames()) {
+      installLightweightMainBoardRefresh();
+      return;
+    }
+    if (tryCount >= NATIVE_REFRESH_KILL_MAX_ATTEMPTS) return;
+    setTimeout(function () {
+      ensureLightweightMainBoardRefreshInstalled(tryCount + 1);
+    }, NATIVE_REFRESH_KILL_RETRY_MS);
   }
 
   function findOriginalForm() {
@@ -1706,6 +1760,76 @@
     });
   }
 
+  function extractUserIconSources(upHtml) {
+    var upDoc = new DOMParser().parseFromString(upHtml, 'text/html');
+    var crdiv = upDoc.getElementById('crdiv1');
+    if (!crdiv) return [];
+    var imgs = crdiv.querySelectorAll('img');
+    var sources = [];
+    for (var ii = 0; ii < imgs.length; ii++) {
+      var src = imgs[ii].getAttribute('src') || '';
+      if (/images\/personal\//i.test(src)) continue;
+      if (/images\/x4\/sm\//i.test(src)) continue;
+      if (/\/pict_/i.test(src)) continue;
+      if (/\/x0\.gif/i.test(src)) continue;
+      sources.push(src);
+    }
+    return sources;
+  }
+
+  function applyUserIconSources(fwData, sources) {
+    if (!fwData || !fwData.headTipIcons) return;
+    fwData.headTipIcons.innerHTML = '';
+    for (var i = 0; i < sources.length; i++) {
+      var tipImg = document.createElement('img');
+      tipImg.src = sources[i];
+      fwData.headTipIcons.appendChild(tipImg);
+    }
+  }
+
+  function refreshWhisperUserIcons(key, userpageUrl, force) {
+    if (!NETWORK.fwUserpage.enabled || !userpageUrl) return Promise.resolve([]);
+    var fwData = floatingWindows[key];
+    if (!fwData) return Promise.resolve([]);
+
+    var cached = getCachedUserIconSources(key);
+    if (!force && cached && (Date.now() - cached.updatedAt) < FW_USER_ICON_CACHE_TTL_MS) {
+      applyUserIconSources(fwData, cached.sources);
+      return Promise.resolve(cached.sources);
+    }
+
+    return enqueueXchatHtmlJob('fw-userpage:' + key, function () {
+      return fetch(userpageUrl, { credentials: 'include' });
+    })
+      .then(function (r2) { return r2.text(); })
+      .then(function (upHtml) {
+        var sources = extractUserIconSources(upHtml);
+        cacheUserIconSources(key, sources);
+        if (floatingWindows[key]) {
+          applyUserIconSources(floatingWindows[key], sources);
+        }
+        return sources;
+      })
+      .catch(function () { return []; });
+  }
+
+  function scheduleUserIconRefresh(key, userpageUrl, delayMs) {
+    var fwData = floatingWindows[key];
+    if (!fwData) return;
+    if (fwData.userIconRefreshTimer) clearTimeout(fwData.userIconRefreshTimer);
+    fwData.userIconRefreshTimer = setTimeout(function () {
+      var current = floatingWindows[key];
+      if (!current) return;
+      if (current.el.classList.contains('xchat-fw-minimized')) {
+        refreshWhisperUserIcons(key, userpageUrl, true).finally(function () {
+          scheduleUserIconRefresh(key, userpageUrl, TIMERS.fwOnlineStatusPoll.intervalMs);
+        });
+        return;
+      }
+      scheduleUserIconRefresh(key, userpageUrl, TIMERS.fwOnlineStatusPoll.intervalMs);
+    }, delayMs);
+  }
+
   function buildWhisperBaseUrl(nick) {
     var auth = getAuthPath();
     var rid = 0;
@@ -1943,7 +2067,7 @@
     var initialSeenKeys = {};
     var savedReadKeys = getReadKeys(key);
     for (var rk in savedReadKeys) if (savedReadKeys.hasOwnProperty(rk)) initialSeenKeys[rk] = true;
-    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null };
+    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null, onlinePollTimer: null, userIconRefreshTimer: null, userpageUrl: '' };
     saveFloatingState();
 
     // Restore unread badge from localStorage (for minimized windows after page reload)
@@ -2381,7 +2505,9 @@
           var fetchAndUpdateRooms = function () {
             if (!floatingWindows[key]) return;
             if (!NETWORK.fwWonline.enabled) return;
-            fetchWonline(floatingWindows[key].origNick).then(function (result) {
+            return enqueueXchatHtmlJob('fw-wonline:' + key, function () {
+              return fetchWonline(floatingWindows[key].origNick);
+            }).then(function (result) {
               if (!floatingWindows[key]) return;
               roomEl.innerHTML = '';
               if (result.online && result.rooms.length > 0) {
@@ -2420,6 +2546,22 @@
             });
           };
 
+          var scheduleOnlinePoll = function (delayMs) {
+            if (!floatingWindows[key] || !TIMERS.fwOnlineStatusPoll.enabled) return;
+            if (floatingWindows[key].onlinePollTimer) clearTimeout(floatingWindows[key].onlinePollTimer);
+            floatingWindows[key].onlinePollTimer = setTimeout(function () {
+              var current = floatingWindows[key];
+              if (!current) return;
+              if (current.el.classList.contains('xchat-fw-minimized')) {
+                scheduleOnlinePoll(TIMERS.fwOnlineStatusPoll.intervalMs);
+                return;
+              }
+              Promise.resolve(fetchAndUpdateRooms()).finally(function () {
+                scheduleOnlinePoll(TIMERS.fwOnlineStatusPoll.intervalMs);
+              });
+            }, delayMs);
+          };
+
           // Initial fetches
           fetchAndUpdateMessages();
           fetchAndUpdateRooms();
@@ -2432,16 +2574,11 @@
           }
 
           // Periodický polling online stavu — přeskakuje minimalizovaná okna
-          var onlinePollTimer = null;
           if (TIMERS.fwOnlineStatusPoll.enabled) {
-            onlinePollTimer = setInterval(function () {
-              if (floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) return;
-              fetchAndUpdateRooms();
-            }, TIMERS.fwOnlineStatusPoll.intervalMs);
+            scheduleOnlinePoll(TIMERS.fwOnlineStatusPoll.intervalMs);
           }
 
           if (floatingWindows[key]) floatingWindows[key].msgPollTimer = msgPollTimer;
-          floatingWindows[key].onlinePollTimer = onlinePollTimer;
           floatingWindows[key].fetchMessages = fetchAndUpdateMessages;
         }
 
@@ -2539,37 +2676,26 @@
           setTimeout(function () { fwInput.focus(); }, 100);
         }
 
+        var cachedIcons = getCachedUserIconSources(key);
+        if (cachedIcons) {
+          applyUserIconSources(floatingWindows[key], cachedIcons.sources);
+        }
+
         // Fetch userpage for status icons (skip photos and smileys)
         if (userpageUrl && NETWORK.fwUserpage.enabled) {
-          enqueueXchatHtmlJob('fw-userpage:' + key, function () {
-            return fetch(userpageUrl, { credentials: 'include' });
-          })
-            .then(function (r2) { return r2.text(); })
-            .then(function (upHtml) {
-              var upDoc = new DOMParser().parseFromString(upHtml, 'text/html');
-              var crdiv = upDoc.getElementById('crdiv1');
-              if (!crdiv) return;
-              var imgs = crdiv.querySelectorAll('img');
-              for (var ii = 0; ii < imgs.length; ii++) {
-                var src = imgs[ii].getAttribute('src') || '';
-                // Skip personal photos, smileys, pict_ icons and x0.gif
-                if (/images\/personal\//i.test(src)) continue;
-                if (/images\/x4\/sm\//i.test(src)) continue;
-                if (/\/pict_/i.test(src)) continue;
-                if (/\/x0\.gif/i.test(src)) continue;
+          if (floatingWindows[key]) floatingWindows[key].userpageUrl = userpageUrl;
+          refreshWhisperUserIcons(key, userpageUrl, !cachedIcons)
+            .then(function (sources) {
+              iconsSpan.innerHTML = '';
+              for (var ii = 0; ii < sources.length; ii++) {
                 var img = document.createElement('img');
-                img.src = src;
+                img.src = sources[ii];
                 img.border = '0';
                 iconsSpan.appendChild(img);
-                // Also add to head tooltip
-                if (floatingWindows[key] && floatingWindows[key].headTipIcons) {
-                  var tipImg = document.createElement('img');
-                  tipImg.src = src;
-                  floatingWindows[key].headTipIcons.appendChild(tipImg);
-                }
               }
             })
             .catch(function () { /* icons are optional */ });
+          scheduleUserIconRefresh(key, userpageUrl, TIMERS.fwOnlineStatusPoll.intervalMs);
         }
       })
       .catch(function () {
@@ -2589,7 +2715,10 @@
         clearInterval(floatingWindows[key].msgPollTimer);
       }
       if (floatingWindows[key].onlinePollTimer) {
-        clearInterval(floatingWindows[key].onlinePollTimer);
+        clearTimeout(floatingWindows[key].onlinePollTimer);
+      }
+      if (floatingWindows[key].userIconRefreshTimer) {
+        clearTimeout(floatingWindows[key].userIconRefreshTimer);
       }
       if (floatingWindows[key].fetchMessagesTimeout) {
         clearTimeout(floatingWindows[key].fetchMessagesTimeout);
@@ -2970,6 +3099,7 @@
 
     // ── Countdown override ──
 
+    ensureLightweightMainBoardRefreshInstalled();
     setupCountdown();
   }
 
@@ -2981,15 +3111,17 @@
     var customSec = getRefreshInterval();
     var refreshEl = document.getElementById('refresh') || document.getElementById('refresh-orig');
 
-    if (!customSec || !refreshEl) return;
+    if (!refreshEl) return;
     if (!TIMERS.countdownRefresh.enabled) return;
-
-    // Find the parent text around <strong id="refresh"> (e.g. "obnovení: <strong>5</strong>")
-    var parentNode = refreshEl.parentNode;
 
     // Remove the original element so native JS can no longer update it
     // Rename the id so native script loses track
     refreshEl.id = 'refresh-orig';
+
+    if (TIMERS.mainBoardPoll.enabled) {
+      refreshEl.textContent = String(customSec);
+      return;
+    }
 
     if (customSec === 1) {
       // Hide the entire "obnovení: X" area
@@ -3263,11 +3395,6 @@
 
     var sel = targetDoc.createElement('select');
     var currentRefresh = getRefreshInterval();
-    var defaultOpt = targetDoc.createElement('option');
-    defaultOpt.value = '0';
-    defaultOpt.textContent = 'v\u00fdchoz\u00ed (server)';
-    if (!currentRefresh) defaultOpt.selected = true;
-    sel.appendChild(defaultOpt);
     for (var r = 0; r < REFRESH_OPTIONS.length; r++) {
       var opt = targetDoc.createElement('option');
       opt.value = String(REFRESH_OPTIONS[r]);
@@ -3428,7 +3555,7 @@
       s.fwAutoOpen = fwAutoOpenSelect.value;
       s.fwNewestFirst = fwOrderCheckbox.checked;
       s.fwMaxMessages = parseInt(fwMaxInput.value, 10) || 100;
-      s.refreshInterval = parseInt(sel.value, 10) || 0;
+      s.refreshInterval = Math.max(5, parseInt(sel.value, 10) || 5);
       saveSettings(s);
 
       // Apply CSS changes
@@ -3442,6 +3569,7 @@
       overlay.remove();
       // Restart countdown in infopage
       try {
+        ensureLightweightMainBoardRefreshInstalled();
         setupCountdown();
       } catch {}
       // Sync highlight toggle on infopage
@@ -4390,7 +4518,7 @@
     const board = document.getElementById('board');
     if (!board) return;
 
-  installLightweightMainBoardRefresh();
+    ensureLightweightMainBoardRefreshInstalled();
 
     // Intercept clicks on whisper_to links — more reliable than overriding
     // the function across frame boundaries
