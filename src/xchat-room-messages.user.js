@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.9
+// @version      1.2.0
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -2042,12 +2042,15 @@
     var info = document.createElement('div');
     info.className = 'xchat-fw-header-info';
 
-    // Avatar thumbnail in header
+    // Avatar thumbnail in header (wrapped for status dot overlay)
+    var avatarWrap = document.createElement('div');
+    avatarWrap.className = 'xchat-fw-avatar-wrap';
     var avatarImg = document.createElement('img');
     avatarImg.className = 'xchat-fw-header-avatar';
     avatarImg.src = 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
     avatarImg.alt = nick;
-    info.appendChild(avatarImg);
+    avatarWrap.appendChild(avatarImg);
+    info.appendChild(avatarWrap);
 
     var infoTexts = document.createElement('div');
     infoTexts.className = 'xchat-fw-header-texts';
@@ -2233,7 +2236,7 @@
     var initialSeenKeys = {};
     var savedReadKeys = getReadKeys(key);
     for (var rk in savedReadKeys) if (savedReadKeys.hasOwnProperty(rk)) initialSeenKeys[rk] = true;
-    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, iconsEl: iconsSpan, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null, onlinePollTimer: null, userIconRefreshTimer: null, framesetUrl: framesetUrl, roomtopUrl: '', textpageUrl: '', userpageUrl: '', frameUrlsPromise: null };
+    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, avatarWrap: avatarWrap, origNick: nick, headTipIcons: headTipIcons, iconsEl: iconsSpan, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null, onlinePollTimer: null, userIconRefreshTimer: null, framesetUrl: framesetUrl, roomtopUrl: '', textpageUrl: '', userpageUrl: '', frameUrlsPromise: null };
     saveFloatingState();
     if (startMinimized) bootstrapWhisperUserIcons(key, framesetUrl);
 
@@ -2637,39 +2640,75 @@
           var fetchAndUpdateRooms = function () {
             if (!floatingWindows[key]) return;
             if (!NETWORK.fwWonline.enabled) return;
+            var aw = floatingWindows[key].avatarWrap;
             return enqueueXchatHtmlJob('fw-wonline:' + key, function () {
               return fetchWonline(floatingWindows[key].origNick);
             }).then(function (result) {
               if (!floatingWindows[key]) return;
               roomEl.innerHTML = '';
+              // Remove previous status dot from avatar
+              var oldDot = aw && aw.querySelector('.xchat-fw-status-dot');
+              if (oldDot) oldDot.remove();
               if (result.online && result.rooms.length > 0) {
                 // Sort rooms by idle time ascending (least idle first)
                 var sortedRooms = result.rooms.slice().sort(function (a, b) {
                   return parseIdleToSeconds(a.idle) - parseIdleToSeconds(b.idle);
                 });
-                var dot = document.createElement('span');
-                dot.className = 'xchat-fw-status-dot xchat-fw-status-online';
-                dot.textContent = '\u25CF';
-                roomEl.appendChild(dot);
+                // Status dot on avatar
+                if (aw) {
+                  var dot = document.createElement('span');
+                  dot.className = 'xchat-fw-status-dot xchat-fw-status-online';
+                  dot.textContent = '\u25CF';
+                  aw.appendChild(dot);
+                }
+                // Build room text as a single string for word-safe truncation
+                var parts = [];
                 for (var ri = 0; ri < sortedRooms.length; ri++) {
-                  if (ri > 0) {
-                    var sep = document.createTextNode(', ');
-                    roomEl.appendChild(sep);
+                  parts.push(ri === 0 ? sortedRooms[ri].name + ' (' + sortedRooms[ri].idle + ')' : sortedRooms[ri].name);
+                }
+                var fullText = parts.join(', ');
+                // Measure overflow using a temporary span
+                var measure = document.createElement('span');
+                measure.textContent = fullText;
+                roomEl.appendChild(measure);
+                // Force layout to measure
+                if (roomEl.scrollWidth > roomEl.clientWidth) {
+                  // Remove entries from end until text fits with ellipsis
+                  while (parts.length > 1) {
+                    parts.pop();
+                    measure.textContent = parts.join(', ') + '\u2026';
+                    if (roomEl.scrollWidth <= roomEl.clientWidth) break;
+                  }
+                  if (parts.length === 1 && roomEl.scrollWidth > roomEl.clientWidth) {
+                    measure.textContent = parts[0] + '\u2026';
+                  }
+                }
+                measure.remove();
+                // Now build DOM with links for the visible entries
+                for (var ri2 = 0; ri2 < parts.length; ri2++) {
+                  if (ri2 > 0) {
+                    roomEl.appendChild(document.createTextNode(', '));
                   }
                   var roomLink = document.createElement('a');
                   roomLink.className = 'xchat-fw-room-link';
-                  roomLink.href = buildRoomVisitUrl(sortedRooms[ri].rid);
+                  roomLink.href = buildRoomVisitUrl(sortedRooms[ri2].rid);
                   roomLink.target = '_blank';
-                  roomLink.textContent = sortedRooms[ri].name + ' (' + sortedRooms[ri].idle + ')';
-                  roomLink.title = sortedRooms[ri].name + ' \u2013 nemluvil ' + sortedRooms[ri].idle;
+                  roomLink.textContent = parts[ri2];
+                  roomLink.title = sortedRooms[ri2].name + ' \u2013 nemluvil ' + sortedRooms[ri2].idle;
                   roomLink.addEventListener('click', function (e) { e.stopPropagation(); });
                   roomEl.appendChild(roomLink);
                 }
+                if (parts.length < sortedRooms.length) {
+                  roomEl.appendChild(document.createTextNode('\u2026'));
+                }
               } else {
-                var dot = document.createElement('span');
-                dot.className = 'xchat-fw-status-dot xchat-fw-status-offline';
-                dot.textContent = '\u25CF';
-                roomEl.appendChild(dot);
+                // Status dot on avatar (offline)
+                if (aw) {
+                  var dot = document.createElement('span');
+                  dot.className = 'xchat-fw-status-dot xchat-fw-status-offline';
+                  dot.textContent = '\u25CF';
+                  aw.appendChild(dot);
+                }
                 var offlineText = document.createElement('span');
                 offlineText.className = 'xchat-fw-status-offline-text';
                 offlineText.textContent = 'offline';
@@ -4290,9 +4329,7 @@
       '  background: #8291A5;',
       '  color: #fff;',
       '  padding: 6px 8px;',
-      '  display: flex;',
-      '  align-items: center;',
-      '  justify-content: space-between;',
+      '  position: relative;',
       '  cursor: pointer;',
       '  flex-shrink: 0;',
       '  user-select: none;',
@@ -4305,17 +4342,28 @@
       '  gap: 6px;',
       '  min-width: 0;',
       '}',
+      '.xchat-fw-avatar-wrap {',
+      '  position: relative;',
+      '  flex-shrink: 0;',
+      '}',
+      '.xchat-fw-avatar-wrap .xchat-fw-status-dot {',
+      '  position: absolute;',
+      '  bottom: -2px;',
+      '  right: -2px;',
+      '  font-size: 10px;',
+      '  line-height: 1;',
+      '}',
       '.xchat-fw-header-avatar {',
       '  width: 28px;',
       '  height: 28px;',
       '  border-radius: 50%;',
       '  object-fit: cover;',
-      '  flex-shrink: 0;',
+      '  display: block;',
       '}',
       '.xchat-fw-header-texts {',
       '  display: flex;',
       '  flex-direction: column;',
-      '  gap: 1px;',
+      '  gap: 0;',
       '  min-width: 0;',
       '  overflow: hidden;',
       '}',
@@ -4324,6 +4372,7 @@
       '  align-items: center;',
       '  gap: 4px;',
       '  min-width: 0;',
+      '  padding-right: 58px;',
       '}',
       '.xchat-fw-icons {',
       '  display: flex;',
@@ -4346,26 +4395,23 @@
       '  white-space: nowrap;',
       '  overflow: hidden;',
       '  text-overflow: ellipsis;',
-      '  display: flex;',
-      '  align-items: center;',
-      '  gap: 3px;',
       '  line-height: 1;',
+      '  margin-top: 3px;',
       '}',
       '.xchat-fw-status-dot {',
       '  font-size: 14px;',
       '  line-height: 1;',
-      '  flex-shrink: 0;',
       '}',
       '.xchat-fw-status-online {',
       '  color: #0f0;',
       '  text-shadow: 0 0 4px #0f0;',
       '}',
       '.xchat-fw-status-offline {',
-      '  color: #f33;',
-      '  text-shadow: 0 0 4px #f33;',
+      '  color: #FF0000;',
+      '  text-shadow: 0 0 4px #FF0000;',
       '}',
       '.xchat-fw-status-offline-text {',
-      '  color: #f55;',
+      '  color: #FF0000;',
       '  font-size: 10px;',
       '}',
       '.xchat-fw-room-links {',
@@ -4374,12 +4420,13 @@
       '  text-overflow: ellipsis;',
       '  white-space: nowrap;',
       '}',
-      '.xchat-fw-room-link {',
+      '.xchat-fw-room-link, .xchat-fw-room-link:visited {',
       '  color: #fff;',
       '  text-decoration: none;',
       '  cursor: pointer;',
       '}',
       '.xchat-fw-room-link:hover {',
+      '  color: #fff;',
       '  text-decoration: underline;',
       '}',
       '.xchat-fw-load-more {',
@@ -4396,7 +4443,10 @@
       '.xchat-fw-header-btns {',
       '  display: flex;',
       '  gap: 4px;',
-      '  flex-shrink: 0;',
+      '  position: absolute;',
+      '  top: 4px;',
+      '  right: 4px;',
+      '  z-index: 1;',
       '}',
       '.xchat-fw-header-btn {',
       '  background: none;',
@@ -4409,6 +4459,7 @@
       '  opacity: 0.8;',
       '}',
       '.xchat-fw-header-btn:hover {',
+      '  background: #6E7F98;',
       '  opacity: 1;',
       '}',
       '.xchat-fw-body {',
