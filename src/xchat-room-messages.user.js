@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.5
+// @version      1.1.6
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -41,6 +41,8 @@
   var XCHAT_HTML_JOB_GAP_MS = 250;
   var FW_USER_ICON_CACHE_KEY = '_xchat_fw_user_icons';
   var FW_USER_ICON_CACHE_TTL_MS = 60000;
+  var FW_USER_ICON_OPEN_REFRESH_MS = 60000;
+  var FW_USER_ICON_MINIMIZED_REFRESH_MS = 300000;
   var NATIVE_REFRESH_KILL_RETRY_MS = 500;
   var NATIVE_REFRESH_KILL_MAX_ATTEMPTS = 20;
   var xchatHtmlJobQueue = [];
@@ -1794,19 +1796,109 @@
   }
 
   function applyUserIconSources(fwData, sources) {
-    if (!fwData || !fwData.headTipIcons) return;
-    fwData.headTipIcons.innerHTML = '';
+    if (!fwData) return;
+    if (fwData.iconsEl) fwData.iconsEl.innerHTML = '';
+    if (fwData.headTipIcons) fwData.headTipIcons.innerHTML = '';
     for (var i = 0; i < sources.length; i++) {
+      if (fwData.iconsEl) {
+        var iconImg = document.createElement('img');
+        iconImg.src = sources[i];
+        iconImg.border = '0';
+        fwData.iconsEl.appendChild(iconImg);
+      }
+      if (!fwData.headTipIcons) continue;
       var tipImg = document.createElement('img');
       tipImg.src = sources[i];
       fwData.headTipIcons.appendChild(tipImg);
     }
   }
 
+  function parseWhisperFrameUrls(html) {
+    var roomtopUrl = '';
+    var textpageUrl = '';
+    var userpageUrl = '';
+    var frameRe = /<frame\b[^>]*>/gi;
+    var frameMatch;
+    while ((frameMatch = frameRe.exec(html)) !== null) {
+      var tag = frameMatch[0];
+      var srcM = tag.match(/\bsrc="([^"]*)"/i);
+      var nameM = tag.match(/\bname="([^"]*)"/i);
+      var src = srcM ? srcM[1] : '';
+      var name = nameM ? nameM[1] : '';
+      if (name === 'roomframe' || /op=room(top|frame)ng/i.test(src)) roomtopUrl = src;
+      else if (name === 'textpage' || /op=textpageng/i.test(src)) textpageUrl = src;
+      else if (name === 'userpage' || /op=whisperuserpage/i.test(src)) userpageUrl = src;
+    }
+
+    if (roomtopUrl) {
+      roomtopUrl = roomtopUrl.replace(/op=roomframeng/i, 'op=roomtopng');
+    }
+
+    var base = location.protocol + '//www.xchat.cz/';
+    if (roomtopUrl && !/^https?:/.test(roomtopUrl)) roomtopUrl = base + roomtopUrl.replace(/^\//, '');
+    if (textpageUrl && !/^https?:/.test(textpageUrl)) textpageUrl = base + textpageUrl.replace(/^\//, '');
+    if (userpageUrl && !/^https?:/.test(userpageUrl)) userpageUrl = base + userpageUrl.replace(/^\//, '');
+
+    if (roomtopUrl) {
+      if (/[&?]js=\d+/.test(roomtopUrl)) {
+        roomtopUrl = roomtopUrl.replace(/([&?]js=)\d+/, '$10');
+      } else {
+        roomtopUrl += (roomtopUrl.indexOf('?') >= 0 ? '&' : '?') + 'js=0';
+      }
+    }
+
+    return {
+      roomtopUrl: roomtopUrl,
+      textpageUrl: textpageUrl,
+      userpageUrl: userpageUrl
+    };
+  }
+
+  function resolveWhisperFrameUrls(key, framesetUrl) {
+    var fwData = floatingWindows[key];
+    if (!fwData || !framesetUrl) return Promise.resolve(null);
+    if (fwData.roomtopUrl || fwData.textpageUrl || fwData.userpageUrl) {
+      return Promise.resolve({
+        roomtopUrl: fwData.roomtopUrl || '',
+        textpageUrl: fwData.textpageUrl || '',
+        userpageUrl: fwData.userpageUrl || ''
+      });
+    }
+    if (fwData.frameUrlsPromise) return fwData.frameUrlsPromise;
+    if (!NETWORK.fwFrameset.enabled) return Promise.resolve(null);
+
+    fwData.frameUrlsPromise = enqueueXchatHtmlJob('fw-frameset:' + key, function () {
+      return fetch(framesetUrl, { credentials: 'include' });
+    })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var urls = parseWhisperFrameUrls(html);
+        if (floatingWindows[key]) {
+          floatingWindows[key].roomtopUrl = urls.roomtopUrl;
+          floatingWindows[key].textpageUrl = urls.textpageUrl;
+          floatingWindows[key].userpageUrl = urls.userpageUrl;
+        }
+        return urls;
+      })
+      .finally(function () {
+        if (floatingWindows[key]) {
+          floatingWindows[key].frameUrlsPromise = null;
+        }
+      });
+
+    return fwData.frameUrlsPromise;
+  }
+
+  function getWhisperUserIconRefreshInterval(fwData) {
+    if (!fwData || !fwData.el) return FW_USER_ICON_OPEN_REFRESH_MS;
+    return fwData.el.classList.contains('xchat-fw-minimized') ? FW_USER_ICON_MINIMIZED_REFRESH_MS : FW_USER_ICON_OPEN_REFRESH_MS;
+  }
+
   function refreshWhisperUserIcons(key, userpageUrl, force) {
     if (!NETWORK.fwUserpage.enabled || !userpageUrl) return Promise.resolve([]);
     var fwData = floatingWindows[key];
     if (!fwData) return Promise.resolve([]);
+    fwData.userpageUrl = userpageUrl;
 
     var cached = getCachedUserIconSources(key);
     if (!force && cached && (Date.now() - cached.updatedAt) < FW_USER_ICON_CACHE_TTL_MS) {
@@ -1829,21 +1921,42 @@
       .catch(function () { return []; });
   }
 
-  function scheduleUserIconRefresh(key, userpageUrl, delayMs) {
+  function scheduleUserIconRefresh(key, framesetUrl, delayMs, forceFetch) {
     var fwData = floatingWindows[key];
     if (!fwData) return;
     if (fwData.userIconRefreshTimer) clearTimeout(fwData.userIconRefreshTimer);
     fwData.userIconRefreshTimer = setTimeout(function () {
       var current = floatingWindows[key];
       if (!current) return;
-      if (current.el.classList.contains('xchat-fw-minimized')) {
-        refreshWhisperUserIcons(key, userpageUrl, true).finally(function () {
-          scheduleUserIconRefresh(key, userpageUrl, TIMERS.fwOnlineStatusPoll.intervalMs);
+      resolveWhisperFrameUrls(key, current.framesetUrl || framesetUrl)
+        .then(function (frameUrls) {
+          if (!floatingWindows[key] || !frameUrls || !frameUrls.userpageUrl) return [];
+          return refreshWhisperUserIcons(key, frameUrls.userpageUrl, forceFetch !== false);
+        })
+        .finally(function () {
+          var next = floatingWindows[key];
+          if (!next) return;
+          scheduleUserIconRefresh(key, next.framesetUrl || framesetUrl, getWhisperUserIconRefreshInterval(next), true);
         });
-        return;
-      }
-      scheduleUserIconRefresh(key, userpageUrl, TIMERS.fwOnlineStatusPoll.intervalMs);
     }, delayMs);
+  }
+
+  function bootstrapWhisperUserIcons(key, framesetUrl) {
+    var fwData = floatingWindows[key];
+    if (!fwData) return;
+    var cached = getCachedUserIconSources(key);
+    if (cached) {
+      applyUserIconSources(fwData, cached.sources);
+    }
+    var refreshMs = getWhisperUserIconRefreshInterval(fwData);
+    var needsImmediateFetch = !cached || (Date.now() - cached.updatedAt) >= refreshMs;
+    scheduleUserIconRefresh(key, framesetUrl, needsImmediateFetch ? 0 : refreshMs, true);
+  }
+
+  function rescheduleWhisperUserIconsForState(key, immediate) {
+    var fwData = floatingWindows[key];
+    if (!fwData) return;
+    scheduleUserIconRefresh(key, fwData.framesetUrl, immediate ? 0 : getWhisperUserIconRefreshInterval(fwData), true);
   }
 
   function buildWhisperBaseUrl(nick) {
@@ -1872,6 +1985,7 @@
       ensureWindowsFit(fwRef.el);
       // Lazy-load content if not yet loaded
       if (!fwRef.loaded && fwRef.loadContent) fwRef.loadContent();
+      rescheduleWhisperUserIconsForState(key, true);
       // Focus the input field (only for manual opens)
       if (!noFocus) {
         var inp = fwRef.el.querySelector('.xchat-fw-input');
@@ -1940,6 +2054,7 @@
       fw.classList.toggle('xchat-fw-minimized');
       head.classList.toggle('xchat-fw-head-visible');
       saveFloatingState();
+      rescheduleWhisperUserIconsForState(key, false);
     });
     btnsDiv.appendChild(minBtn);
 
@@ -1996,6 +2111,7 @@
           floatingWindows[key].fetchMessages();
         }
       }
+      rescheduleWhisperUserIconsForState(key, wasMinimized);
     });
     fw.appendChild(header);
 
@@ -2066,6 +2182,7 @@
           floatingWindows[key].fetchMessages();
         }
       }
+      rescheduleWhisperUserIconsForState(key, true);
     });
 
     if (startMinimized) {
@@ -2083,8 +2200,9 @@
     var initialSeenKeys = {};
     var savedReadKeys = getReadKeys(key);
     for (var rk in savedReadKeys) if (savedReadKeys.hasOwnProperty(rk)) initialSeenKeys[rk] = true;
-    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null, onlinePollTimer: null, userIconRefreshTimer: null, userpageUrl: '' };
+    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, iconsEl: iconsSpan, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null, onlinePollTimer: null, userIconRefreshTimer: null, framesetUrl: framesetUrl, roomtopUrl: '', textpageUrl: '', userpageUrl: '', frameUrlsPromise: null };
     saveFloatingState();
+    if (startMinimized) bootstrapWhisperUserIcons(key, framesetUrl);
 
     // Restore unread badge from localStorage (for minimized windows after page reload)
     if (startMinimized) {
@@ -2103,48 +2221,13 @@
     var loadContent = function () {
       if (floatingWindows[key] && floatingWindows[key].loaded) return;
       if (floatingWindows[key]) floatingWindows[key].loaded = true;
-      if (!NETWORK.fwFrameset.enabled) return;
-      enqueueXchatHtmlJob('fw-frameset:' + key, function () {
-        return fetch(framesetUrl, { credentials: 'include' });
-      })
-      .then(function (r) { return r.text(); })
-      .then(function (html) {
-        // DOMParser discards <frame> tags, so parse with regex
-        var roomtopUrl = '';
-        var textpageUrl = '';
-        var userpageUrl = '';
-        var frameRe = /<frame\b[^>]*>/gi;
-        var frameMatch;
-        while ((frameMatch = frameRe.exec(html)) !== null) {
-          var tag = frameMatch[0];
-          var srcM = tag.match(/\bsrc="([^"]*)"/i);
-          var nameM = tag.match(/\bname="([^"]*)"/i);
-          var src = srcM ? srcM[1] : '';
-          var name = nameM ? nameM[1] : '';
-          if (name === 'roomframe' || /op=room(top|frame)ng/i.test(src)) roomtopUrl = src;
-          else if (name === 'textpage' || /op=textpageng/i.test(src)) textpageUrl = src;
-          else if (name === 'userpage' || /op=whisperuserpage/i.test(src)) userpageUrl = src;
-        }
-
-        // roomframe points to roomframeng (sub-frameset), we need roomtopng (actual content)
-        if (roomtopUrl) {
-          roomtopUrl = roomtopUrl.replace(/op=roomframeng/i, 'op=roomtopng');
-        }
-
-        // Make URLs absolute
+      resolveWhisperFrameUrls(key, framesetUrl)
+      .then(function (frameUrls) {
+        if (!frameUrls) return;
+        var roomtopUrl = frameUrls.roomtopUrl;
+        var textpageUrl = frameUrls.textpageUrl;
+        var userpageUrl = frameUrls.userpageUrl;
         var base = location.protocol + '//www.xchat.cz/';
-        if (roomtopUrl && !/^https?:/.test(roomtopUrl)) roomtopUrl = base + roomtopUrl.replace(/^\//, '');
-        if (textpageUrl && !/^https?:/.test(textpageUrl)) textpageUrl = base + textpageUrl.replace(/^\//, '');
-        if (userpageUrl && !/^https?:/.test(userpageUrl)) userpageUrl = base + userpageUrl.replace(/^\//, '');
-
-        // Ensure js=0 in roomtop URL (no JS auto-refresh, plain HTML)
-        if (roomtopUrl) {
-          if (/[&?]js=\d+/.test(roomtopUrl)) {
-            roomtopUrl = roomtopUrl.replace(/([&?]js=)\d+/, '$10');
-          } else {
-            roomtopUrl += (roomtopUrl.indexOf('?') >= 0 ? '&' : '?') + 'js=0';
-          }
-        }
 
         // ── Load messages from roomtopng via fetch+parse ──
         if (roomtopUrl) {
@@ -2692,26 +2775,10 @@
           setTimeout(function () { fwInput.focus(); }, 100);
         }
 
-        var cachedIcons = getCachedUserIconSources(key);
-        if (cachedIcons) {
-          applyUserIconSources(floatingWindows[key], cachedIcons.sources);
-        }
-
         // Fetch userpage for status icons (skip photos and smileys)
         if (userpageUrl && NETWORK.fwUserpage.enabled) {
-          if (floatingWindows[key]) floatingWindows[key].userpageUrl = userpageUrl;
-          refreshWhisperUserIcons(key, userpageUrl, !cachedIcons)
-            .then(function (sources) {
-              iconsSpan.innerHTML = '';
-              for (var ii = 0; ii < sources.length; ii++) {
-                var img = document.createElement('img');
-                img.src = sources[ii];
-                img.border = '0';
-                iconsSpan.appendChild(img);
-              }
-            })
-            .catch(function () { /* icons are optional */ });
-          scheduleUserIconRefresh(key, userpageUrl, TIMERS.fwOnlineStatusPoll.intervalMs);
+          refreshWhisperUserIcons(key, userpageUrl, false).catch(function () { /* icons are optional */ });
+          rescheduleWhisperUserIconsForState(key, false);
         }
       })
       .catch(function () {
