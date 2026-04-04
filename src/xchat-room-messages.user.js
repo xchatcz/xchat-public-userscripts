@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.2.1
+// @version      1.2.2
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -2411,8 +2411,7 @@
         var userpageUrl = frameUrls.userpageUrl;
         var base = location.protocol + '//www.xchat.cz/';
 
-        // ── Load messages from roomtopng via fetch+parse ──
-        if (roomtopUrl) {
+        // ── Create message container and load IndexedDB history (always, even without roomtopUrl) ──
           // Create message container
           var msgContainer = document.createElement('div');
           msgContainer.className = 'xchat-fw-messages';
@@ -2593,13 +2592,11 @@
             }
           };
 
-          // Load history later in idle time so it does not contend with live roomtopng polling.
-          runWhenIdle(function () {
-            loadHistoryFromDB().then(function () {
-              // Mark history messages so live fetch can skip duplicates
-            });
-          }, 1500);
+          // Load IndexedDB history immediately so user sees messages even without roomtopUrl
+          loadHistoryFromDB();
 
+          // ── Load messages from roomtopng via fetch+parse ──
+          if (roomtopUrl) {
           // Build fetch URL with cache-busting fake= param
           var buildFetchUrl = function () {
             var url = roomtopUrl;
