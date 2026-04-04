@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.7
+// @version      1.1.8
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -934,16 +934,44 @@
         frames.dataFrame.document.body.removeAttribute('onload');
       }
     } catch {}
-    try { frames.dataFrame.refresh = function () {}; } catch {}
-    try { frames.dataFrame.doLoad = function () {}; } catch {}
-    try { frames.dataFrame.window.refresh = function () {}; } catch {}
-    try { frames.dataFrame.window.doLoad = function () {}; } catch {}
-    try {
-      if (window.top.cID) {
-        clearInterval(window.top.cID);
-        window.top.cID = null;
-      }
-    } catch {}
+
+    // Permanently trap refresh/doLoad on dataframe so even late native re‑assignment is harmless
+    var noop = function () {};
+    noop._xchatNoOp = true;
+    var dfTargets = [];
+    try { dfTargets.push(frames.dataFrame); } catch {}
+    try { if (frames.dataFrame.window && frames.dataFrame.window !== frames.dataFrame) dfTargets.push(frames.dataFrame.window); } catch {}
+    dfTargets.forEach(function (target) {
+      ['refresh', 'doLoad'].forEach(function (fnName) {
+        try {
+          Object.defineProperty(target, fnName, {
+            get: function () { return noop; },
+            set: function () { /* swallow native assignment */ },
+            configurable: true,
+            enumerable: true
+          });
+        } catch {
+          try { target[fnName] = noop; } catch {}
+        }
+      });
+    });
+
+    // Kill current native timer and re‑kill periodically to catch late native setup
+    function killNativeCID() {
+      try {
+        if (window.top.cID) {
+          clearInterval(window.top.cID);
+          window.top.cID = null;
+        }
+      } catch {}
+    }
+    killNativeCID();
+    var cidKillCount = 0;
+    var cidKillTimer = setInterval(function () {
+      killNativeCID();
+      cidKillCount++;
+      if (cidKillCount >= 10) clearInterval(cidKillTimer);
+    }, 500);
 
     updateMainBoardCountdown(state, true);
     state.infoCountdownTimer = setInterval(function () {
@@ -1032,15 +1060,15 @@
     fakeForm.submit();
 
     // Once the server responds, trigger a soft refresh of the message board
-    // (same mechanism as the "obnovit" link in infopage).
+    // via the lightweight polling queue (dataframe.refresh is a no-op).
     iframe.addEventListener('load', function () {
       fakeForm.remove();
       iframe.remove();
-      try {
-        if (window.top.roomframe && window.top.roomframe.dataframe && window.top.roomframe.dataframe.refresh) {
-          window.top.roomframe.dataframe.refresh();
-        }
-      } catch { /* cross-origin */ }
+      var state = getActiveMainBoardRefreshState();
+      if (state && state.active) {
+        if (state.refreshTimer) clearTimeout(state.refreshTimer);
+        runMainBoardRefresh(state);
+      }
     });
 
     // Fallback cleanup if load never fires.
@@ -1744,8 +1772,10 @@
     var url = 'https://scripts.xchat.cz/scripts/wonline.php?nick=' + encodeURIComponent(nick);
     return new Promise(function (resolve) {
       if (typeof GM_xmlhttpRequest !== 'function') {
-        console.error('[xchat-fw] GM_xmlhttpRequest not available, falling back to fetch');
-        fetch(url).then(function (r) { return r.text(); }).then(function (t) { resolve(t); }).catch(function () { resolve(''); });
+        console.error('[xchat-fw] GM_xmlhttpRequest not available, falling back to fetch (through queue)');
+        enqueueXchatHtmlJob('fw-wonline-fallback:' + normNick(nick), function () {
+          return fetch(url).then(function (r) { return r.text(); });
+        }).then(function (t) { resolve(t || ''); }).catch(function () { resolve(''); });
         return;
       }
       GM_xmlhttpRequest({
