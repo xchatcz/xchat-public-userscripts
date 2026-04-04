@@ -4739,6 +4739,7 @@
       '  align-items: center;',
       '  padding: 6px;',
       '  gap: 4px;',
+      '  background: #E6E7E8;',
       '  border-bottom: 1px solid #eee;',
       '  flex-shrink: 0;',
       '}',
