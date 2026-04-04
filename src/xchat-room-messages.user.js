@@ -32,14 +32,30 @@
   const HIGHLIGHT_STYLE_ID = 'xchat-board-highlight';
   const KICK_HIGHLIGHT_STYLE_ID = 'xchat-board-kick-highlight';
   const BAD_CMD_STYLE_ID = 'xchat-board-hide-badcmd';
-  var KICK_HIGHLIGHT_CSS = '.systemtext:has(.system.kicked), .systemtext:has(.system.killed) { background: #fcc !important; color: #900 !important; }';
+  var KICK_HIGHLIGHT_CSS = '.xchat-kick-highlight { background: #fcc !important; color: #900 !important; }';
   var REFRESH_OPTIONS = [1, 2, 3, 5, 10, 15];
+  var BOARD_PROCESS_BATCH_SIZE = 12;
+  var IDLE_DB_TIMEOUT_MS = 1000;
+  var ROOM_BOARD_MAX_KEYS = 250;
+  var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
+
+  function runWhenIdle(fn, timeoutMs) {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(function () { fn(); }, { timeout: timeoutMs || IDLE_DB_TIMEOUT_MS });
+    } else {
+      setTimeout(fn, 0);
+    }
+  }
 
   // ══════════════════════════════════════════════════════════════════
   // ── Registr intervalů (timery) ──
   // Každý interval lze zapnout/vypnout přes enabled: true/false.
   // ══════════════════════════════════════════════════════════════════
   var TIMERS = {
+    // setTimeout(5000) – lehký polling hlavního skla bez nativní roomtopng navigace.
+    // Callback: lightweight main board refresh přes js=0 odpověď a vlastní DOM update.
+    mainBoardPoll:     { enabled: true, intervalMs: 5000, description: 'Lehký polling hlavního skla bez nativního refresh navigací' },
+
     // setInterval(5000) – polling whisper zpráv v každém otevřeném FW okně
     // Callback: fetchAndUpdateMessages() → fetch roomtopng, parse HTML, update DOM
     // Přeskakuje minimalizovaná okna.
@@ -61,6 +77,10 @@
   // Každý požadavek lze vypnout přes enabled: false pro diagnostiku.
   // ══════════════════════════════════════════════════════════════════
   var NETWORK = {
+    // fetch() – polling hlavního room boardu přes roomtopng&js=0&inc=1
+    // URL: /modchat?op=roomtopng&rid={rid}&js=0&inc=1&last_line={n}&fake={timestamp}
+    mainBoardMessages: { enabled: true, description: 'Polling hlavního skla přes roomtopng v js=0 režimu' },
+
     // fetch() – jednorázový při otevření FW okna
     // URL: /modchat?op=whisperingframeset&rid={rid}&wfrom={nick}
     fwFrameset:   { enabled: true, description: 'Načtení framesetu whisper okna (jednorázový)' },
@@ -530,42 +550,44 @@
     var rec = parseBoardDiv(div);
     if (!rec) return;
     rec.fingerprint = msgFingerprint(rec);
-    dbAdd(rec).then(function (id) {
-      // id is null when the record already existed in IndexedDB (duplicate)
-      if (!id || !rec.is_whisper || rec.message_type !== 'whisper' || getWhisperMode() !== 'floating') return;
-      var autoMode = getFwAutoOpen();
-      if (autoMode === 'none') return;
+    runWhenIdle(function () {
+      dbAdd(rec).then(function (id) {
+        // id is null when the record already existed in IndexedDB (duplicate)
+        if (!id || !rec.is_whisper || rec.message_type !== 'whisper' || getWhisperMode() !== 'floating') return;
+        var autoMode = getFwAutoOpen();
+        if (autoMode === 'none') return;
 
-      // Extract nick from the whisper_to link
-      var link = div.querySelector('a[href*="whisper_to"]');
-      if (!link) return;
-      var m = (link.getAttribute('href') || '').match(/whisper_to\s*\(\s*['"]([^'"]+)['"]\s*\)/);
-      if (!m) return;
-      var senderNick = m[1];
-      var senderKey = normNick(senderNick);
+        // Extract nick from the whisper_to link
+        var link = div.querySelector('a[href*="whisper_to"]');
+        if (!link) return;
+        var m = (link.getAttribute('href') || '').match(/whisper_to\s*\(\s*['"]([^'"]+)['"]\s*\)/);
+        if (!m) return;
+        var senderNick = m[1];
+        var senderKey = normNick(senderNick);
 
-      // Check if window already exists and is minimized
-      if (floatingWindows[senderKey]) {
-        if (floatingWindows[senderKey].el.classList.contains('xchat-fw-minimized')) {
-          // Window is minimized — increment unread badge
-          updateUnreadBadge(senderKey, (floatingWindows[senderKey].unreadCount || 0) + 1);
+        // Check if window already exists and is minimized
+        if (floatingWindows[senderKey]) {
+          if (floatingWindows[senderKey].el.classList.contains('xchat-fw-minimized')) {
+            // Window is minimized — increment unread badge
+            updateUnreadBadge(senderKey, (floatingWindows[senderKey].unreadCount || 0) + 1);
+          }
+          return;
         }
-        return;
-      }
 
-      // No window exists yet — open based on mode
-      if (autoMode === 'window') {
-        _fwAutoOpenNoFocus = true;
-        link.click();
-        _fwAutoOpenNoFocus = false;
-      } else if (autoMode === 'bubble') {
-        // Open as minimized bubble with badge
-        _fwAutoOpenNoFocus = true;
-        openFloatingWhisper(senderNick, true, true);
-        _fwAutoOpenNoFocus = false;
-        updateUnreadBadge(senderKey, 1);
-      }
-    }).catch(function () { /* silent */ });
+        // No window exists yet — open based on mode
+        if (autoMode === 'window') {
+          _fwAutoOpenNoFocus = true;
+          link.click();
+          _fwAutoOpenNoFocus = false;
+        } else if (autoMode === 'bubble') {
+          // Open as minimized bubble with badge
+          _fwAutoOpenNoFocus = true;
+          openFloatingWhisper(senderNick, true, true);
+          _fwAutoOpenNoFocus = false;
+          updateUnreadBadge(senderKey, 1);
+        }
+      }).catch(function () { /* silent */ });
+    }, IDLE_DB_TIMEOUT_MS);
   }
 
   function captureAllDivs() {
@@ -573,6 +595,233 @@
     if (!board) return;
     var divs = board.querySelectorAll(':scope > div');
     for (var i = 0; i < divs.length; i++) captureDiv(divs[i]);
+  }
+
+  function processBoardDiv(div) {
+    captureDiv(div);
+    rememberOutgoingNickFromDiv(div);
+    processEntryDiv(div);
+    markBadCommandDiv(div);
+    markKickHighlightDiv(div);
+  }
+
+  function processExistingBoardDivs() {
+    var board = document.getElementById('board');
+    if (!board) return;
+    var divs = board.querySelectorAll(':scope > div');
+    for (var i = 0; i < divs.length; i++) processBoardDiv(divs[i]);
+  }
+
+  function getMainBoardFrames() {
+    try {
+      var roomFrame = window.top.roomframe;
+      var boardFrame = roomFrame && (roomFrame.frames.roomframetop || roomFrame.frames[0]);
+      var dataFrame = roomFrame && (roomFrame.frames.dataframe || roomFrame.frames[1]);
+      var infoFrame = window.top.infopage || window.top.frames.infopage || window.top.frames[2];
+      var board = boardFrame && boardFrame.document.getElementById('board');
+      if (!roomFrame || !boardFrame || !dataFrame || !infoFrame || !board) return null;
+      return {
+        roomFrame: roomFrame,
+        boardFrame: boardFrame,
+        dataFrame: dataFrame,
+        infoFrame: infoFrame,
+        board: board
+      };
+    } catch {}
+    return null;
+  }
+
+  function parseRoomBoardBodyLines(html) {
+    var bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    if (!bodyMatch) return [];
+    var inner = bodyMatch[1]
+      .replace(/^\s*<font\b[^>]*><font\b[^>]*>/i, '')
+      .replace(/<\/font>\s*<\/font>\s*$/i, '')
+      .trim();
+    if (!inner) return [];
+    return inner.split(/<br\s*\/?>/gi).map(function (line) { return line.trim(); }).filter(Boolean);
+  }
+
+  function buildBoardLineKey(div, fallbackIndex) {
+    var rec = parseBoardDiv(div);
+    if (rec) return msgFingerprint(rec);
+    return 'raw|' + fallbackIndex + '|' + (div.textContent || '').trim();
+  }
+
+  function rememberRecentBoardKey(state, key) {
+    if (!key) return;
+    if (!state.recentBoardKeys[key]) {
+      state.recentBoardKeyOrder.push(key);
+      state.recentBoardKeys[key] = 1;
+    }
+    if (state.recentBoardKeyOrder.length > ROOM_BOARD_MAX_KEYS) {
+      var dropKey = state.recentBoardKeyOrder.shift();
+      delete state.recentBoardKeys[dropKey];
+    }
+  }
+
+  function seedRecentBoardKeys(state) {
+    var divs = state.board.querySelectorAll(':scope > div');
+    for (var i = 0; i < divs.length; i++) {
+      rememberRecentBoardKey(state, buildBoardLineKey(divs[i], i));
+    }
+  }
+
+  function updateMainBoardCountdown(state, reset) {
+    var refreshEl;
+    try {
+      refreshEl = state.infoFrame.document.getElementById('refresh') || state.infoFrame.document.getElementById('refresh-orig');
+    } catch {}
+    if (!refreshEl) return;
+    if (reset) state.countdown = Math.max(1, Math.round(state.intervalMs / 1000));
+    refreshEl.textContent = String(state.countdown);
+  }
+
+  function scheduleMainBoardRefresh(state) {
+    if (!state.active) return;
+    if (state.refreshTimer) clearTimeout(state.refreshTimer);
+    state.refreshTimer = setTimeout(function () {
+      runMainBoardRefresh(state);
+    }, state.intervalMs);
+  }
+
+  function stopMainBoardRefresh(state) {
+    if (!state) return;
+    state.active = false;
+    if (state.refreshTimer) clearTimeout(state.refreshTimer);
+    if (state.countdownTimer) clearInterval(state.countdownTimer);
+    if (state.infoCountdownTimer) clearInterval(state.infoCountdownTimer);
+    if (state.ownerWindow && state.unloadHandler) {
+      try { state.ownerWindow.removeEventListener('unload', state.unloadHandler); } catch {}
+    }
+  }
+
+  function runMainBoardRefresh(state) {
+    if (!state.active || state.inFlight || !NETWORK.mainBoardMessages.enabled) {
+      scheduleMainBoardRefresh(state);
+      return;
+    }
+    state.inFlight = true;
+
+    var url = new URL(state.baseUrl.toString());
+    url.searchParams.set('last_line', String(state.lastLine));
+    url.searchParams.set('fake', String(Math.floor(Date.now() / 1000)));
+
+    fetch(url.toString(), {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    })
+      .then(function (response) { return response.arrayBuffer(); })
+      .then(function (buf) { return ROOM_BOARD_TEXT_DECODER.decode(buf); })
+      .then(function (html) {
+        if (!state.active) return;
+        var lines = parseRoomBoardBodyLines(html);
+        if (lines.length === 0) return;
+
+        var fragment = state.boardFrame.document.createDocumentFragment();
+        for (var i = 0; i < lines.length; i++) {
+          var div = state.boardFrame.document.createElement('div');
+          div.innerHTML = lines[i];
+          var key = buildBoardLineKey(div, state.lastLine + i);
+          if (state.recentBoardKeys[key]) continue;
+          rememberRecentBoardKey(state, key);
+          fragment.appendChild(div);
+        }
+
+        if (fragment.childNodes.length > 0) {
+          state.board.insertBefore(fragment, state.board.firstChild);
+          while (state.board.children.length > state.maxLines) {
+            state.board.lastElementChild.remove();
+          }
+        }
+
+        state.lastLine += lines.length;
+      })
+      .catch(function () {})
+      .finally(function () {
+        state.inFlight = false;
+        updateMainBoardCountdown(state, true);
+        scheduleMainBoardRefresh(state);
+      });
+  }
+
+  function installLightweightMainBoardRefresh() {
+    if (!TIMERS.mainBoardPoll.enabled || !NETWORK.mainBoardMessages.enabled) return;
+
+    var frames = getMainBoardFrames();
+    if (!frames) return;
+
+    var currentHref = '';
+    try { currentHref = frames.dataFrame.location.href; } catch {}
+    if (!currentHref) return;
+
+    var previous = window.top._xchatLightBoardRefreshState;
+    if (previous && previous.ownerWindow === window && previous.dataFrame === frames.dataFrame) return;
+    stopMainBoardRefresh(previous);
+
+    var baseUrl = new URL(currentHref);
+    var lastLine = parseInt(baseUrl.searchParams.get('last_line') || '0', 10);
+    if (!isFinite(lastLine) || lastLine < 0) lastLine = 0;
+    baseUrl.searchParams.set('js', '0');
+    baseUrl.searchParams.set('inc', '1');
+
+    var state = {
+      active: true,
+      ownerWindow: window,
+      unloadHandler: null,
+      dataFrame: frames.dataFrame,
+      boardFrame: frames.boardFrame,
+      infoFrame: frames.infoFrame,
+      board: frames.board,
+      baseUrl: baseUrl,
+      lastLine: lastLine,
+      intervalMs: TIMERS.mainBoardPoll.intervalMs,
+      countdown: Math.max(1, Math.round(TIMERS.mainBoardPoll.intervalMs / 1000)),
+      recentBoardKeys: {},
+      recentBoardKeyOrder: [],
+      refreshTimer: null,
+      countdownTimer: null,
+      infoCountdownTimer: null,
+      inFlight: false,
+      maxLines: Math.max(frames.board.children.length || 0, 100)
+    };
+
+    seedRecentBoardKeys(state);
+    window.top._xchatLightBoardRefreshState = state;
+    state.unloadHandler = function () {
+      if (window.top._xchatLightBoardRefreshState === state) {
+        stopMainBoardRefresh(state);
+      }
+    };
+    window.addEventListener('unload', state.unloadHandler);
+
+    try {
+      var metaRefresh = frames.dataFrame.document.querySelector('meta[http-equiv="Refresh" i]');
+      if (metaRefresh) metaRefresh.remove();
+    } catch {}
+
+    try { frames.dataFrame.refresh = function () {}; } catch {}
+    try { frames.dataFrame.doLoad = function () {}; } catch {}
+    try {
+      if (window.top.cID) {
+        clearInterval(window.top.cID);
+        window.top.cID = null;
+      }
+    } catch {}
+
+    updateMainBoardCountdown(state, true);
+    state.infoCountdownTimer = setInterval(function () {
+      if (!state.active) return;
+      state.countdown = Math.max(0, state.countdown - 1);
+      updateMainBoardCountdown(state, false);
+    }, 1000);
+
+    scheduleMainBoardRefresh(state);
   }
 
   function findOriginalForm() {
@@ -914,32 +1163,42 @@
   }
 
   function hasMessagesForNick(nick) {
+    if (!_outgoingNickCache) rebuildOutgoingNickCache();
+    return !!_outgoingNickCache[normNick(nick)];
+  }
+
+  var _outgoingNickCache = null;
+
+  function addOutgoingNickToCache(nick) {
+    if (!nick) return;
+    if (!_outgoingNickCache) _outgoingNickCache = {};
+    _outgoingNickCache[normNick(nick)] = true;
+  }
+
+  function rememberOutgoingNickFromDiv(div) {
+    var whisperLink = div.querySelector('.umsg_whisperi a');
+    if (whisperLink) addOutgoingNickToCache(whisperLink.textContent.trim());
+
+    var roomMsg = div.querySelector('.umsg_roomi');
+    if (!roomMsg) return;
+    var bold = roomMsg.querySelector('b');
+    if (!bold) return;
+    var textAfterBold = '';
+    var node = bold.nextSibling;
+    while (node) {
+      textAfterBold += node.textContent || '';
+      node = node.nextSibling;
+    }
+    var match = textAfterBold.trimStart().match(/^([^:]+):/);
+    if (match) addOutgoingNickToCache(match[1].trim());
+  }
+
+  function rebuildOutgoingNickCache() {
+    _outgoingNickCache = {};
     var board = document.getElementById('board');
-    if (!board) return false;
-
-    // Check whispers from me to nick: umsg_whisperi contains a link with nick text
-    var whispers = board.querySelectorAll('.umsg_whisperi a');
-    for (var i = 0; i < whispers.length; i++) {
-      if (whispers[i].textContent.trim() === nick) return true;
-    }
-
-    // Check room messages from me addressing nick: umsg_roomi text starts with "nick:"
-    var rooms = board.querySelectorAll('.umsg_roomi');
-    var prefix = nick + ':';
-    for (var i = 0; i < rooms.length; i++) {
-      // Text after the sender bold, e.g. "nick: Ahoj"
-      var b = rooms[i].querySelector('b');
-      if (!b) continue;
-      var afterBold = '';
-      var node = b.nextSibling;
-      while (node) {
-        afterBold += node.textContent || '';
-        node = node.nextSibling;
-      }
-      if (afterBold.trimStart().indexOf(prefix) === 0) return true;
-    }
-
-    return false;
+    if (!board) return;
+    var divs = board.querySelectorAll(':scope > div');
+    for (var i = 0; i < divs.length; i++) rememberOutgoingNickFromDiv(divs[i]);
   }
 
   function processEntryDiv(div) {
@@ -1103,6 +1362,12 @@
     var node = b.nextSibling;
     while (node) { afterBold += node.textContent || ''; node = node.nextSibling; }
     if (afterBold.trim() === '\u0160patn\u00fd p\u0159\u00edkaz') div.classList.add('xchat-badcmd');
+  }
+
+  function markKickHighlightDiv(div) {
+    if (div.querySelector('.system.kicked, .system.killed')) {
+      div.classList.add('xchat-kick-highlight');
+    }
   }
 
   function markAllBadCommands() {
@@ -3956,12 +4221,10 @@
 
   function initStartframe() {
     injectStyles();
-    captureAllDivs();
-    processAll();
+    processExistingBoardDivs();
     restoreBoardFilter();
     restoreHighlight();
     restoreKickHighlight();
-    markAllBadCommands();
     restoreHideBadCommands();
 
     var detectedNick = getMyNick();
@@ -4023,6 +4286,8 @@
     const board = document.getElementById('board');
     if (!board) return;
 
+  installLightweightMainBoardRefresh();
+
     // Intercept clicks on whisper_to links — more reliable than overriding
     // the function across frame boundaries
     if (!isNestedStartframe) {
@@ -4043,12 +4308,12 @@
 
     function processPendingNodes() {
       pendingRaf = 0;
-      var nodes = pendingNodes;
-      pendingNodes = [];
-      for (var ni = 0; ni < nodes.length; ni++) {
-        captureDiv(nodes[ni]);
-        processEntryDiv(nodes[ni]);
-        markBadCommandDiv(nodes[ni]);
+      var batch = pendingNodes.splice(0, BOARD_PROCESS_BATCH_SIZE);
+      for (var ni = 0; ni < batch.length; ni++) {
+        processBoardDiv(batch[ni]);
+      }
+      if (pendingNodes.length > 0) {
+        pendingRaf = requestAnimationFrame(processPendingNodes);
       }
     }
 
