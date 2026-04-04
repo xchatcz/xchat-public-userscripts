@@ -38,6 +38,50 @@
   var IDLE_DB_TIMEOUT_MS = 1000;
   var ROOM_BOARD_MAX_KEYS = 250;
   var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
+  var XCHAT_HTML_JOB_GAP_MS = 250;
+  var xchatHtmlJobQueue = [];
+  var xchatHtmlJobActive = false;
+  var xchatHtmlJobTimer = null;
+  var xchatHtmlNextAllowedAt = 0;
+
+  function pumpXchatHtmlJobQueue() {
+    if (xchatHtmlJobActive) return;
+    if (!xchatHtmlJobQueue.length) return;
+    if (xchatHtmlJobTimer) return;
+
+    var waitMs = Math.max(0, xchatHtmlNextAllowedAt - Date.now());
+    if (waitMs > 0) {
+      xchatHtmlJobTimer = setTimeout(function () {
+        xchatHtmlJobTimer = null;
+        pumpXchatHtmlJobQueue();
+      }, waitMs);
+      return;
+    }
+
+    var entry = xchatHtmlJobQueue.shift();
+    xchatHtmlJobActive = true;
+    Promise.resolve()
+      .then(entry.job)
+      .then(entry.resolve, entry.reject)
+      .finally(function () {
+        xchatHtmlJobActive = false;
+        xchatHtmlNextAllowedAt = Date.now() + XCHAT_HTML_JOB_GAP_MS;
+        pumpXchatHtmlJobQueue();
+      });
+  }
+
+  function enqueueXchatHtmlJob(key, job) {
+    return new Promise(function (resolve, reject) {
+      for (var i = xchatHtmlJobQueue.length - 1; i >= 0; i--) {
+        if (xchatHtmlJobQueue[i].key === key) {
+          xchatHtmlJobQueue[i].resolve(null);
+          xchatHtmlJobQueue.splice(i, 1);
+        }
+      }
+      xchatHtmlJobQueue.push({ key: key, job: job, resolve: resolve, reject: reject });
+      pumpXchatHtmlJobQueue();
+    });
+  }
 
   function runWhenIdle(fn, timeoutMs) {
     if (typeof requestIdleCallback === 'function') {
@@ -726,42 +770,44 @@
     url.searchParams.set('last_line', String(state.lastLine));
     url.searchParams.set('fake', String(Math.floor(Date.now() / 1000)));
 
-    fetch(url.toString(), {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      }
-    })
-      .then(function (response) { return response.arrayBuffer(); })
-      .then(function (buf) { return ROOM_BOARD_TEXT_DECODER.decode(buf); })
-      .then(function (html) {
-        if (!state.active) return;
-        var lines = parseRoomBoardBodyLines(html);
-        if (lines.length === 0) return;
-
-        var fragment = state.boardFrame.document.createDocumentFragment();
-        for (var i = 0; i < lines.length; i++) {
-          var div = state.boardFrame.document.createElement('div');
-          div.innerHTML = lines[i];
-          var key = buildBoardLineKey(div, state.lastLine + i);
-          if (state.recentBoardKeys[key]) continue;
-          div.dataset.xchatBoardKey = key;
-          rememberRecentBoardKey(state, key);
-          fragment.appendChild(div);
+    enqueueXchatHtmlJob('main-board', function () {
+      return fetch(url.toString(), {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
         }
-
-        if (fragment.childNodes.length > 0) {
-          state.board.insertBefore(fragment, state.board.firstChild);
-          while (state.board.children.length > state.maxLines) {
-            state.board.lastElementChild.remove();
-          }
-        }
-
-        state.lastLine += lines.length;
       })
+        .then(function (response) { return response.arrayBuffer(); })
+        .then(function (buf) { return ROOM_BOARD_TEXT_DECODER.decode(buf); })
+        .then(function (html) {
+          if (!state.active) return;
+          var lines = parseRoomBoardBodyLines(html);
+          if (lines.length === 0) return;
+
+          var fragment = state.boardFrame.document.createDocumentFragment();
+          for (var i = 0; i < lines.length; i++) {
+            var div = state.boardFrame.document.createElement('div');
+            div.innerHTML = lines[i];
+            var key = buildBoardLineKey(div, state.lastLine + i);
+            if (state.recentBoardKeys[key]) continue;
+            div.dataset.xchatBoardKey = key;
+            rememberRecentBoardKey(state, key);
+            fragment.appendChild(div);
+          }
+
+          if (fragment.childNodes.length > 0) {
+            state.board.insertBefore(fragment, state.board.firstChild);
+            while (state.board.children.length > state.maxLines) {
+              state.board.lastElementChild.remove();
+            }
+          }
+
+          state.lastLine += lines.length;
+        });
+    })
       .catch(function () {})
       .finally(function () {
         state.inFlight = false;
@@ -1918,7 +1964,9 @@
       if (floatingWindows[key] && floatingWindows[key].loaded) return;
       if (floatingWindows[key]) floatingWindows[key].loaded = true;
       if (!NETWORK.fwFrameset.enabled) return;
-      fetch(framesetUrl, { credentials: 'include' })
+      enqueueXchatHtmlJob('fw-frameset:' + key, function () {
+        return fetch(framesetUrl, { credentials: 'include' });
+      })
       .then(function (r) { return r.text(); })
       .then(function (html) {
         // DOMParser discards <frame> tags, so parse with regex
@@ -2140,10 +2188,12 @@
             }
           };
 
-          // Load history first, then start live polling
-          loadHistoryFromDB().then(function () {
-            // Mark history messages so live fetch can skip duplicates
-          });
+          // Load history later in idle time so it does not contend with live roomtopng polling.
+          runWhenIdle(function () {
+            loadHistoryFromDB().then(function () {
+              // Mark history messages so live fetch can skip duplicates
+            });
+          }, 1500);
 
           // Build fetch URL with cache-busting fake= param
           var buildFetchUrl = function () {
@@ -2159,19 +2209,20 @@
 
           var fetchAndUpdateMessages = function () {
             if (!floatingWindows[key]) return; // window was closed
-            if (!NETWORK.fwMessages.enabled) return;
-            if (floatingWindows[key].messageFetchInFlight) return;
+            if (!NETWORK.fwMessages.enabled) return Promise.resolve();
+            if (floatingWindows[key].messageFetchInFlight) return Promise.resolve();
             floatingWindows[key].messageFetchInFlight = true;
 
-            fetch(buildFetchUrl(), {
-              method: 'GET',
-              credentials: 'include',
-              headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache'
-              }
-            })
+            return enqueueXchatHtmlJob('fw-messages:' + key, function () {
+              return fetch(buildFetchUrl(), {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                  'Cache-Control': 'no-cache',
+                  'Pragma': 'no-cache'
+                }
+              })
               .then(function (r2) { return r2.arrayBuffer(); })
               .then(function (buf) { return new TextDecoder('iso-8859-2').decode(buf); })
               .then(function (rfHtml) {
@@ -2300,13 +2351,30 @@
                     msgContainer.scrollTop = msgContainer.scrollHeight;
                   }
                 }
-              })
+              });
+            })
               .catch(function () {})
               .finally(function () {
                 if (floatingWindows[key]) {
                   floatingWindows[key].messageFetchInFlight = false;
                 }
               });
+          };
+
+          var scheduleMessagePoll = function (delayMs) {
+            if (!floatingWindows[key] || !TIMERS.fwMessagesPoll.enabled) return;
+            if (floatingWindows[key].msgPollTimer) clearTimeout(floatingWindows[key].msgPollTimer);
+            floatingWindows[key].msgPollTimer = setTimeout(function () {
+              var current = floatingWindows[key];
+              if (!current) return;
+              if (current.el.classList.contains('xchat-fw-minimized')) {
+                scheduleMessagePoll(TIMERS.fwMessagesPoll.intervalMs);
+                return;
+              }
+              fetchAndUpdateMessages().finally(function () {
+                scheduleMessagePoll(TIMERS.fwMessagesPoll.intervalMs);
+              });
+            }, delayMs);
           };
 
           // ── Fetch remote user's online status from wonline.php ──
@@ -2356,13 +2424,11 @@
           fetchAndUpdateMessages();
           fetchAndUpdateRooms();
 
-          // Periodický polling zpráv — přeskakuje minimalizovaná okna
+          // Periodický polling zpráv — přeskakuje minimalizovaná okna a neběží paralelně
           var msgPollTimer = null;
           if (TIMERS.fwMessagesPoll.enabled) {
-            msgPollTimer = setInterval(function () {
-              if (floatingWindows[key] && floatingWindows[key].el.classList.contains('xchat-fw-minimized')) return;
-              fetchAndUpdateMessages();
-            }, TIMERS.fwMessagesPoll.intervalMs);
+            scheduleMessagePoll(TIMERS.fwMessagesPoll.intervalMs);
+            msgPollTimer = floatingWindows[key] ? floatingWindows[key].msgPollTimer : null;
           }
 
           // Periodický polling online stavu — přeskakuje minimalizovaná okna
@@ -2374,14 +2440,16 @@
             }, TIMERS.fwOnlineStatusPoll.intervalMs);
           }
 
-          floatingWindows[key].msgPollTimer = msgPollTimer;
+          if (floatingWindows[key]) floatingWindows[key].msgPollTimer = msgPollTimer;
           floatingWindows[key].onlinePollTimer = onlinePollTimer;
           floatingWindows[key].fetchMessages = fetchAndUpdateMessages;
         }
 
         // ── Fetch textpage form data for sending ──
         if (textpageUrl && NETWORK.fwTextpage.enabled) {
-          fetch(textpageUrl, { credentials: 'include' })
+          enqueueXchatHtmlJob('fw-textpage:' + key, function () {
+            return fetch(textpageUrl, { credentials: 'include' });
+          })
             .then(function (r3) { return r3.text(); })
             .then(function (tpHtml) {
               if (!floatingWindows[key]) return;
@@ -2473,7 +2541,9 @@
 
         // Fetch userpage for status icons (skip photos and smileys)
         if (userpageUrl && NETWORK.fwUserpage.enabled) {
-          fetch(userpageUrl, { credentials: 'include' })
+          enqueueXchatHtmlJob('fw-userpage:' + key, function () {
+            return fetch(userpageUrl, { credentials: 'include' });
+          })
             .then(function (r2) { return r2.text(); })
             .then(function (upHtml) {
               var upDoc = new DOMParser().parseFromString(upHtml, 'text/html');
