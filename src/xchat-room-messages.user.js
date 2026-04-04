@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.4
+// @version      1.1.5
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -725,7 +725,7 @@
   function getActiveMainBoardRefreshState() {
     try {
       var state = window.top._xchatLightBoardRefreshState;
-      if (state && state.active && state.ownerWindow === window) return state;
+      if (state && state.active) return state;
     } catch {}
     return null;
   }
@@ -746,6 +746,16 @@
     var divs = state.board.querySelectorAll(':scope > div');
     for (var i = 0; i < divs.length; i++) {
       var key = buildBoardLineKey(divs[i], i);
+      divs[i].dataset.xchatBoardKey = key;
+      rememberRecentBoardKey(state, key);
+    }
+  }
+
+  function syncMainBoardRecentKeysFromDom(state) {
+    if (!state || !state.board) return;
+    var divs = state.board.querySelectorAll(':scope > div');
+    for (var i = 0; i < divs.length; i++) {
+      var key = divs[i].dataset.xchatBoardKey || buildBoardLineKey(divs[i], state.lastLine + i);
       divs[i].dataset.xchatBoardKey = key;
       rememberRecentBoardKey(state, key);
     }
@@ -816,6 +826,8 @@
           var lines = parseRoomBoardBodyLines(html);
           if (lines.length === 0) return;
 
+          syncMainBoardRecentKeysFromDom(state);
+
           var fragment = state.boardFrame.document.createDocumentFragment();
           for (var i = 0; i < lines.length; i++) {
             var div = state.boardFrame.document.createElement('div');
@@ -856,7 +868,11 @@
     if (!currentHref) return;
 
     var previous = window.top._xchatLightBoardRefreshState;
-    if (previous && previous.ownerWindow === window && previous.dataFrame === frames.dataFrame) {
+    if (previous && previous.active && previous.dataFrame === frames.dataFrame) {
+      previous.dataFrame = frames.dataFrame;
+      previous.boardFrame = frames.boardFrame;
+      previous.infoFrame = frames.infoFrame;
+      previous.board = frames.board;
       previous.intervalMs = getRefreshInterval() * 1000;
       previous.countdown = getRefreshInterval();
       updateMainBoardCountdown(previous, true);
