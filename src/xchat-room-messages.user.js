@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.6
+// @version      1.1.7
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -766,7 +766,12 @@
   function syncMainBoardRecentKey(div) {
     var state = getActiveMainBoardRefreshState();
     if (!state || !div) return;
+    var hadKey = !!div.dataset.xchatBoardKey;
     var key = div.dataset.xchatBoardKey || buildBoardLineKey(div, state.lastLine + state.recentBoardKeyOrder.length);
+    if (!hadKey && state.recentBoardKeys[key]) {
+      div.remove();
+      return;
+    }
     div.dataset.xchatBoardKey = key;
     rememberRecentBoardKey(state, key);
   }
