@@ -598,6 +598,7 @@
   }
 
   function processBoardDiv(div) {
+    syncMainBoardRecentKey(div);
     captureDiv(div);
     rememberOutgoingNickFromDiv(div);
     processEntryDiv(div);
@@ -648,6 +649,14 @@
     return 'raw|' + fallbackIndex + '|' + (div.textContent || '').trim();
   }
 
+  function getActiveMainBoardRefreshState() {
+    try {
+      var state = window.top._xchatLightBoardRefreshState;
+      if (state && state.active && state.ownerWindow === window) return state;
+    } catch {}
+    return null;
+  }
+
   function rememberRecentBoardKey(state, key) {
     if (!key) return;
     if (!state.recentBoardKeys[key]) {
@@ -663,8 +672,18 @@
   function seedRecentBoardKeys(state) {
     var divs = state.board.querySelectorAll(':scope > div');
     for (var i = 0; i < divs.length; i++) {
-      rememberRecentBoardKey(state, buildBoardLineKey(divs[i], i));
+      var key = buildBoardLineKey(divs[i], i);
+      divs[i].dataset.xchatBoardKey = key;
+      rememberRecentBoardKey(state, key);
     }
+  }
+
+  function syncMainBoardRecentKey(div) {
+    var state = getActiveMainBoardRefreshState();
+    if (!state || !div) return;
+    var key = div.dataset.xchatBoardKey || buildBoardLineKey(div, state.lastLine + state.recentBoardKeyOrder.length);
+    div.dataset.xchatBoardKey = key;
+    rememberRecentBoardKey(state, key);
   }
 
   function updateMainBoardCountdown(state, reset) {
@@ -729,6 +748,7 @@
           div.innerHTML = lines[i];
           var key = buildBoardLineKey(div, state.lastLine + i);
           if (state.recentBoardKeys[key]) continue;
+          div.dataset.xchatBoardKey = key;
           rememberRecentBoardKey(state, key);
           fragment.appendChild(div);
         }
@@ -1877,7 +1897,7 @@
     var initialSeenKeys = {};
     var savedReadKeys = getReadKeys(key);
     for (var rk in savedReadKeys) if (savedReadKeys.hasOwnProperty(rk)) initialSeenKeys[rk] = true;
-    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false };
+    floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, origNick: nick, headTipIcons: headTipIcons, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null };
     saveFloatingState();
 
     // Restore unread badge from localStorage (for minimized windows after page reload)
@@ -2140,6 +2160,8 @@
           var fetchAndUpdateMessages = function () {
             if (!floatingWindows[key]) return; // window was closed
             if (!NETWORK.fwMessages.enabled) return;
+            if (floatingWindows[key].messageFetchInFlight) return;
+            floatingWindows[key].messageFetchInFlight = true;
 
             fetch(buildFetchUrl(), {
               method: 'GET',
@@ -2279,7 +2301,12 @@
                   }
                 }
               })
-              .catch(function () {});
+              .catch(function () {})
+              .finally(function () {
+                if (floatingWindows[key]) {
+                  floatingWindows[key].messageFetchInFlight = false;
+                }
+              });
           };
 
           // ── Fetch remote user's online status from wonline.php ──
@@ -2423,7 +2450,11 @@
             // Refresh messages after sending
             var fwd = floatingWindows[key];
             if (fwd && fwd.fetchMessages) {
-              setTimeout(function () { fwd.fetchMessages(); }, 600);
+              if (fwd.fetchMessagesTimeout) clearTimeout(fwd.fetchMessagesTimeout);
+              fwd.fetchMessagesTimeout = setTimeout(function () {
+                var latest = floatingWindows[key];
+                if (latest && latest.fetchMessages) latest.fetchMessages();
+              }, 900);
             }
           });
           setTimeout(function () { fakeForm.remove(); hIframe.remove(); }, 10000);
@@ -2489,6 +2520,9 @@
       }
       if (floatingWindows[key].onlinePollTimer) {
         clearInterval(floatingWindows[key].onlinePollTimer);
+      }
+      if (floatingWindows[key].fetchMessagesTimeout) {
+        clearTimeout(floatingWindows[key].fetchMessagesTimeout);
       }
       clearFwUnread(key);
       floatingWindows[key].el.remove();
