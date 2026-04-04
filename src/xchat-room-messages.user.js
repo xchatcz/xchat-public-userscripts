@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.2.2
+// @version      1.2.3
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -614,8 +614,12 @@
     };
   }
 
+  function normalizeDedupText(text) {
+    return (text || '').replace(/\s+/g, '');
+  }
+
   function msgFingerprint(rec) {
-    return rec.room_id + '|' + rec.timestamp.getTime() + '|' + rec.sender + '|' + rec.recipient + '|' + rec.content_text;
+    return rec.room_id + '|' + rec.timestamp.getTime() + '|' + rec.sender + '|' + rec.recipient + '|' + normalizeDedupText(rec.content_text);
   }
 
   function captureDiv(div) {
@@ -721,7 +725,7 @@
   function buildBoardLineKey(div, fallbackIndex) {
     var rec = parseBoardDiv(div);
     if (rec) return msgFingerprint(rec);
-    return 'raw|' + (div.textContent || '').trim();
+    return 'raw|' + normalizeDedupText(div.textContent);
   }
 
   function getActiveMainBoardRefreshState() {
@@ -2482,7 +2486,7 @@
                 var rec = relevant[i];
                 var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
                 var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
-                var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
+                var msgKey = timeStr + '|' + rec.sender + '|' + normalizeDedupText(rec.content_text);
                 // Mark as seen for live-fetch dedup, but always display history messages
                 seenKeys[msgKey] = true;
                 var isMine = /_(out|i)$/.test(rec.message_type || '');
@@ -2546,7 +2550,7 @@
               var rec = allHistoryMsgs[i];
               var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
               var timeStr = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
-              var msgKey = timeStr + '|' + rec.sender + '|' + rec.content_text;
+              var msgKey = timeStr + '|' + rec.sender + '|' + normalizeDedupText(rec.content_text);
               // Mark as seen for live-fetch dedup, but always display history messages
               seenKeys[msgKey] = true;
               var isMine = /_(out|i)$/.test(rec.message_type || '');
@@ -2692,7 +2696,7 @@
 
                   // Unique key for deduplication (strip HTML to match content_text from IndexedDB)
                   var msgTextPlain = msgText.replace(/<[^>]+>/g, '').trim();
-                  var msgKey = time + '|' + msgNick + '|' + msgTextPlain;
+                  var msgKey = time + '|' + msgNick + '|' + normalizeDedupText(msgTextPlain);
 
                   parsedMsgs.push({
                     key: msgKey,
