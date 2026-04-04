@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.2.0
+// @version      1.2.1
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -519,7 +519,7 @@
       now.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10), 0);
     }
 
-    var msgSpan = div.querySelector('.umsg_room, .umsg_roomi, .umsg_whisper, .umsg_whisperi, .umsg_wcross, .umsg_wcrossi, .umsg_wsystem, .umsg_advert');
+    var msgSpan = div.querySelector('.umsg_room, .umsg_roomi, .umsg_whisper, .umsg_whisperi, .umsg_wcross, .umsg_wcrossi, .umsg_wsystem, .umsg_advert, .umsg_whw, .umsg_whwi');
     if (!msgSpan) {
       var sysText = div.querySelector('.systemtext');
       if (sysText) {
@@ -541,7 +541,7 @@
     var message_type = 'room';
     var is_whisper = false;
 
-    if (/umsg_whisper/.test(cls) || /umsg_wcross/.test(cls)) {
+    if (/umsg_whisper/.test(cls) || /umsg_wcross/.test(cls) || /umsg_whw/.test(cls)) {
       message_type = 'whisper';
       is_whisper = true;
     } else if (/umsg_wsystem/.test(cls)) {
@@ -549,7 +549,7 @@
     } else if (/umsg_advert/.test(cls)) {
       message_type = 'advert';
     }
-    if (/umsg_roomi|umsg_whisperi|umsg_wcrossi/.test(cls)) {
+    if (/umsg_roomi|umsg_whisperi|umsg_wcrossi|umsg_whwi/.test(cls)) {
       message_type += '_out';
     }
 
@@ -651,7 +651,9 @@
 
         // No window exists yet — open based on mode
         if (autoMode === 'window') {
+          _fwAutoOpenNoFocus = true;
           link.click();
+          _fwAutoOpenNoFocus = false;
         } else if (autoMode === 'bubble') {
           // Open as minimized bubble with badge
           _fwAutoOpenNoFocus = true;
@@ -719,7 +721,7 @@
   function buildBoardLineKey(div, fallbackIndex) {
     var rec = parseBoardDiv(div);
     if (rec) return msgFingerprint(rec);
-    return 'raw|' + fallbackIndex + '|' + (div.textContent || '').trim();
+    return 'raw|' + (div.textContent || '').trim();
   }
 
   function getActiveMainBoardRefreshState() {
@@ -763,6 +765,9 @@
 
   function syncMainBoardRecentKey(div) {
     var state = getActiveMainBoardRefreshState();
+    if (!state) {
+      try { state = window._xchatWhisperPopupBoardState; } catch {}
+    }
     if (!state || !div) return;
     var hadKey = !!div.dataset.xchatBoardKey;
     var key = div.dataset.xchatBoardKey || buildBoardLineKey(div, state.lastLine + state.recentBoardKeyOrder.length);
@@ -991,6 +996,147 @@
     setTimeout(function () {
       ensureLightweightMainBoardRefreshInstalled(tryCount + 1);
     }, NATIVE_REFRESH_KILL_RETRY_MS);
+  }
+
+  function installWhisperPopupBoardRefresh(board) {
+    if (!TIMERS.mainBoardPoll.enabled || !NETWORK.mainBoardMessages.enabled) return;
+
+    // Build base URL from current page: replace op=startframe with op=roomtopng, set js=0, inc=1
+    var baseUrl = new URL(location.href);
+    baseUrl.searchParams.set('op', 'roomtopng');
+    baseUrl.searchParams.set('js', '0');
+    baseUrl.searchParams.set('inc', '1');
+
+    var lastLine = parseInt(baseUrl.searchParams.get('last_line') || '0', 10);
+    if (!isFinite(lastLine) || lastLine < 0) lastLine = 0;
+
+    var state = {
+      active: true,
+      board: board,
+      baseUrl: baseUrl,
+      lastLine: lastLine,
+      intervalMs: getRefreshInterval() * 1000,
+      recentBoardKeys: {},
+      recentBoardKeyOrder: [],
+      refreshTimer: null,
+      inFlight: false,
+      maxLines: Math.max(board.children.length || 0, 100)
+    };
+
+    seedRecentBoardKeys(state);
+
+    // Trap native refresh/doLoad on the window so native code cannot cause duplicate refreshes
+    var noop = function () {};
+    noop._xchatNoOp = true;
+    ['refresh', 'doLoad'].forEach(function (fnName) {
+      try {
+        Object.defineProperty(window, fnName, {
+          get: function () { return noop; },
+          set: function () {},
+          configurable: true,
+          enumerable: true
+        });
+      } catch {
+        try { window[fnName] = noop; } catch {}
+      }
+    });
+
+    // Kill native cID timer
+    function killNativeCID() {
+      try {
+        if (window.cID) { clearInterval(window.cID); window.cID = null; }
+      } catch {}
+      try {
+        if (window.top.cID) { clearInterval(window.top.cID); window.top.cID = null; }
+      } catch {}
+    }
+    killNativeCID();
+    var cidKillCount = 0;
+    var cidKillTimer = setInterval(function () {
+      killNativeCID();
+      if (++cidKillCount >= 10) clearInterval(cidKillTimer);
+    }, 500);
+
+    // Remove meta refresh if present
+    try {
+      var metaRefresh = document.querySelector('meta[http-equiv="Refresh" i]');
+      if (metaRefresh) metaRefresh.remove();
+    } catch {}
+
+    function scheduleRefresh() {
+      if (!state.active) return;
+      if (state.refreshTimer) clearTimeout(state.refreshTimer);
+      state.refreshTimer = setTimeout(runRefresh, state.intervalMs);
+    }
+
+    function runRefresh() {
+      if (!state.active || state.inFlight) {
+        scheduleRefresh();
+        return;
+      }
+      state.inFlight = true;
+
+      var url = new URL(state.baseUrl.toString());
+      url.searchParams.set('last_line', String(state.lastLine));
+      url.searchParams.set('fake', String(Math.floor(Date.now() / 1000)));
+
+      enqueueXchatHtmlJob('whisper-popup-board', function () {
+        return fetch(url.toString(), {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        })
+          .then(function (response) { return response.arrayBuffer(); })
+          .then(function (buf) { return ROOM_BOARD_TEXT_DECODER.decode(buf); })
+          .then(function (html) {
+            if (!state.active) return;
+            var lines = parseRoomBoardBodyLines(html);
+            if (lines.length === 0) return;
+
+            // Re-sync keys from existing DOM before adding new lines
+            var existingDivs = state.board.querySelectorAll(':scope > div');
+            for (var ei = 0; ei < existingDivs.length; ei++) {
+              var ek = existingDivs[ei].dataset.xchatBoardKey || buildBoardLineKey(existingDivs[ei], state.lastLine + ei);
+              existingDivs[ei].dataset.xchatBoardKey = ek;
+              rememberRecentBoardKey(state, ek);
+            }
+
+            var fragment = document.createDocumentFragment();
+            for (var i = 0; i < lines.length; i++) {
+              var div = document.createElement('div');
+              div.innerHTML = lines[i];
+              var key = buildBoardLineKey(div, state.lastLine + i);
+              if (state.recentBoardKeys[key]) continue;
+              div.dataset.xchatBoardKey = key;
+              rememberRecentBoardKey(state, key);
+              fragment.appendChild(div);
+            }
+
+            if (fragment.childNodes.length > 0) {
+              state.board.insertBefore(fragment, state.board.firstChild);
+              while (state.board.children.length > state.maxLines) {
+                state.board.lastElementChild.remove();
+              }
+            }
+
+            state.lastLine += lines.length;
+          });
+      })
+        .catch(function () {})
+        .finally(function () {
+          state.inFlight = false;
+          scheduleRefresh();
+        });
+    }
+
+    // Store state for syncMainBoardRecentKey to use
+    window._xchatWhisperPopupBoardState = state;
+
+    scheduleRefresh();
   }
 
   function findOriginalForm() {
@@ -4001,17 +4147,17 @@
 
     var exportTextBtn = document.createElement('button');
     exportTextBtn.className = 'btn-export';
-    exportTextBtn.textContent = 'Exportovat v plaintext';
+    exportTextBtn.textContent = 'Kopírovat do schránky';
     actions.appendChild(exportTextBtn);
+
+    var statusEl = document.createElement('span');
+    statusEl.className = 'hist-status';
+    actions.appendChild(statusEl);
 
     var deleteFilteredBtn = document.createElement('button');
     deleteFilteredBtn.className = 'btn-delete';
     deleteFilteredBtn.textContent = 'Smazat zobrazen\u00e9';
     actions.appendChild(deleteFilteredBtn);
-
-    var statusEl = document.createElement('span');
-    statusEl.className = 'hist-status';
-    actions.appendChild(statusEl);
 
     document.body.appendChild(actions);
 
@@ -4136,10 +4282,20 @@
     exportJsonBtn.addEventListener('click', function () {
       if (!currentResults.length) return;
       var json = JSON.stringify(currentResults, null, 2);
-      navigator.clipboard.writeText(json).then(function () {
-        exportJsonBtn.textContent = 'Zkop\u00edrov\u00e1no!';
-        setTimeout(function () { exportJsonBtn.textContent = 'Exportovat do JSON'; }, 2000);
-      });
+      var now = new Date();
+      var dateStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
+        + '_' + String(now.getHours()).padStart(2, '0') + '-' + String(now.getMinutes()).padStart(2, '0');
+      var rid = inpRoom.value.trim() || 'all';
+      var filename = dateStr + '_' + rid + '.json';
+      var blob = new Blob([json], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     });
 
     // ── Export plaintext ──
@@ -4149,7 +4305,7 @@
       var lines = currentResults.map(function (r) { return recToPlaintext(r, showDate); });
       navigator.clipboard.writeText(lines.join('\n')).then(function () {
         exportTextBtn.textContent = 'Zkop\u00edrov\u00e1no!';
-        setTimeout(function () { exportTextBtn.textContent = 'Exportovat v plaintext'; }, 2000);
+        setTimeout(function () { exportTextBtn.textContent = 'Kopírovat do schránky'; }, 2000);
       });
     });
 
@@ -4158,10 +4314,28 @@
       if (!currentResults.length) return;
       if (!confirm('Opravdu smazat ' + currentResults.length + ' zobrazen\u00fdch zpr\u00e1v?')) return;
       var ids = currentResults.map(function (r) { return r.id; });
+      // Collect unique room_ids from deleted results for cleanup
+      var deletedRoomIds = {};
+      currentResults.forEach(function (r) { if (r.room_id) deletedRoomIds[r.room_id] = true; });
       dbDeleteByIds(ids).then(function () {
         deleteFilteredBtn.textContent = 'Smaz\u00e1no!';
         setTimeout(function () { deleteFilteredBtn.textContent = 'Smazat zobrazen\u00e9'; }, 2000);
-        doSearch();
+        // Check if any deleted room still has messages; if not, remove from rooms setting and dropdown
+        var roomCheckPromises = Object.keys(deletedRoomIds).map(function (rid) {
+          return dbQuery({ room_id: rid }).then(function (remaining) {
+            if (remaining.length === 0) {
+              // Remove from settings
+              var rooms = getSetting('rooms', {});
+              delete rooms[rid];
+              setSetting('rooms', rooms);
+              // Remove from dropdown
+              for (var oi = selRoom.options.length - 1; oi >= 0; oi--) {
+                if (selRoom.options[oi].value === rid) selRoom.remove(oi);
+              }
+            }
+          });
+        });
+        Promise.all(roomCheckPromises).then(function () { doSearch(); });
       });
     });
 
@@ -4685,7 +4859,11 @@
     const board = document.getElementById('board');
     if (!board) return;
 
-    ensureLightweightMainBoardRefreshInstalled();
+    if (isWhisperWindow) {
+      installWhisperPopupBoardRefresh(board);
+    } else {
+      ensureLightweightMainBoardRefreshInstalled();
+    }
 
     // Intercept clicks on whisper_to links — more reliable than overriding
     // the function across frame boundaries
