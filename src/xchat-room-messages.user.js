@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.1.8
+// @version      1.1.9
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -651,9 +651,7 @@
 
         // No window exists yet — open based on mode
         if (autoMode === 'window') {
-          _fwAutoOpenNoFocus = true;
           link.click();
-          _fwAutoOpenNoFocus = false;
         } else if (autoMode === 'bubble') {
           // Open as minimized bubble with badge
           _fwAutoOpenNoFocus = true;
@@ -2805,8 +2803,8 @@
         footer.appendChild(fwInput);
         footer.appendChild(sendBtn);
 
-        // Focus input when newly opened (not restored minimized, not auto-opened)
-        if (!startMinimized && !noFocus) {
+        // Focus input when visible (not currently minimized)
+        if (!fw.classList.contains('xchat-fw-minimized')) {
           setTimeout(function () { fwInput.focus(); }, 100);
         }
 
