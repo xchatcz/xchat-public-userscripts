@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.4.8
+// @version      1.5.1
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.4.8';
+  var SCRIPT_VERSION = '1.5.1';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2049,8 +2049,42 @@
   var avatarCache = {};
   var avatarPending = {};
 
+  // ── User sex cache: -1 = unknown, 0 = male, 1 = female ──
+  var userSexCache = {};
+
+  function getUserSex(nick) {
+    var k = nick.toLowerCase();
+    if (userSexCache.hasOwnProperty(k)) return userSexCache[k];
+    var contact = fwContactGet(k);
+    if (contact && contact.sex !== undefined && contact.sex !== null) {
+      userSexCache[k] = contact.sex;
+      return contact.sex;
+    }
+    return -1;
+  }
+
+  function setUserSex(nick, sex) {
+    var k = nick.toLowerCase();
+    userSexCache[k] = sex;
+    fwContactUpdate(k, { sex: sex });
+  }
+
+  function detectSexFromHtml(html) {
+    // whisperuserpage typically contains "Pohlaví: Muž" or "Pohlaví: Žena"
+    var m = html.match(/pohlav[ií]\s*:?\s*(mu[žz]|[žz]ena)/i);
+    if (m) return /^mu/i.test(m[1]) ? 0 : 1;
+    // fallback: look for sex= parameter in any URL on the page (handles &amp; HTML entity)
+    var s = html.match(/[?&](?:amp;)?sex=(-?\d+)/i);
+    if (s) {
+      var sv = parseInt(s[1], 10);
+      if (sv === 0) return 0;
+      if (sv === 1) return 1;
+    }
+    return -1;
+  }
+
   function getAvatarDirectUrl(nick) {
-    return 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
+    return 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick) + '&sex=' + getUserSex(nick);
   }
 
   function loadAvatarUrl(nick, callback) {
@@ -2467,6 +2501,36 @@
         cacheUserIconSources(key, sources);
         if (floatingWindows[key]) {
           applyUserIconSources(floatingWindows[key], sources);
+        }
+        // Detect sex from userpage HTML
+        var detectedSex = detectSexFromHtml(upHtml);
+        if (detectedSex !== -1) {
+          var origNick = floatingWindows[key] ? floatingWindows[key].origNick : '';
+          if (origNick && getUserSex(origNick) !== detectedSex) {
+            setUserSex(origNick, detectedSex);
+            // Invalidate avatar cache so next load uses correct sex
+            var ak = origNick.toLowerCase();
+            delete avatarCache[ak];
+            delete avatarPending[ak];
+            // Reload avatar with correct sex param
+            var newUrl = getAvatarDirectUrl(origNick);
+            if (floatingWindows[key]) {
+              var aw = floatingWindows[key].avatarWrap;
+              if (aw) {
+                var aImg = aw.querySelector('.xchat-fw-header-avatar');
+                if (aImg) aImg.src = newUrl;
+              }
+              var hImg = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-img') : null;
+              if (hImg) hImg.src = newUrl;
+              loadAvatarUrl(origNick, function (url) {
+                if (!url || !floatingWindows[key]) return;
+                var ai = floatingWindows[key].avatarWrap ? floatingWindows[key].avatarWrap.querySelector('.xchat-fw-header-avatar') : null;
+                var hi = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-img') : null;
+                if (ai) ai.src = url;
+                if (hi) hi.src = url;
+              });
+            }
+          }
         }
         return sources;
       })
