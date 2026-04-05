@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.4.3
+// @version      1.4.4
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.4.3';
+  var SCRIPT_VERSION = '1.4.4';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -368,6 +368,12 @@
 
   function getWhisperMode() {
     return getSetting('whisperMode', 'popup');
+  }
+
+  function useFloatingWhispers() {
+    if (getWhisperMode() === 'floating') return true;
+    var ao = getFwAutoOpen();
+    return ao === 'bubble' || ao === 'window';
   }
 
   function getFwNewestFirst() {
@@ -848,7 +854,7 @@
     runWhenIdle(function () {
       dbAdd(rec).then(function (id) {
         // id is null when the record already existed in IndexedDB (duplicate)
-        if (!id || !rec.is_whisper || rec.message_type !== 'whisper' || getWhisperMode() !== 'floating') return;
+        if (!id || !rec.is_whisper || rec.message_type !== 'whisper' || !useFloatingWhispers()) return;
         var autoMode = getFwAutoOpen();
         if (autoMode === 'none') return;
 
@@ -3708,7 +3714,7 @@
   }
 
   function _patchWhisper(win, wrapper) {
-    if (getWhisperMode() === 'floating') {
+    if (useFloatingWhispers()) {
       // Save original if present and not our wrapper
       var cur = null;
       try { cur = win.whisper_to; } catch {}
@@ -5496,13 +5502,13 @@
       try { window.top._xchatUpdateFloatingRoomNames = updateFloatingRoomNames; } catch {}
 
       // Pošeptat launcher bubble
-      if (getWhisperMode() === 'floating') {
+      if (useFloatingWhispers()) {
         createLauncherBubble();
       }
 
       // Load fw_contacts cache from IDB, then restore floating windows
       initFwContacts().then(function () {
-        if (getWhisperMode() !== 'floating') return;
+        if (!useFloatingWhispers()) return;
         var savedState = getFloatingState();
         var savedKeys = Object.keys(savedState);
         var fwIdx = 0;
@@ -5529,7 +5535,7 @@
     // the function across frame boundaries
     if (!isNestedStartframe) {
       board.addEventListener('click', function (e) {
-        if (getWhisperMode() !== 'floating') return;
+        if (!useFloatingWhispers()) return;
         var link = e.target.closest('a[href*="whisper_to"]');
         if (!link) return;
         var m = (link.getAttribute('href') || '').match(/whisper_to\s*\(\s*['"]([^'"]+)['"]\s*\)/);
