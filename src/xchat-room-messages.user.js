@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.3
+// @version      1.3.4
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -10,12 +10,14 @@
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @connect      scripts.xchat.cz
+// @connect      www.xchat.cz
+// @connect      x.ximg.cz
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.3.3';
+  var SCRIPT_VERSION = '1.3.4';
 
   // Must match the domain relaxation used by all xchat frames,
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
@@ -1913,6 +1915,35 @@
   var _fwAutoOpenNoFocus = false; // temporary flag for auto-open without focus
   var FW_STATE_KEY = '_xchat_fw_state';
 
+  // ── Avatar image cache (blob URLs keyed by nick) ──
+  var avatarCache = {};
+  var avatarPending = {};
+
+  function loadAvatarUrl(nick, callback) {
+    var key = nick.toLowerCase();
+    if (avatarCache[key]) { callback(avatarCache[key]); return; }
+    if (avatarPending[key]) { avatarPending[key].push(callback); return; }
+    avatarPending[key] = [callback];
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick),
+      responseType: 'blob',
+      onload: function (resp) {
+        var url;
+        try { url = URL.createObjectURL(resp.response); } catch (e) { /* fallback below */ }
+        if (url) avatarCache[key] = url;
+        var cbs = avatarPending[key] || [];
+        delete avatarPending[key];
+        for (var i = 0; i < cbs.length; i++) cbs[i](url || '');
+      },
+      onerror: function () {
+        var cbs = avatarPending[key] || [];
+        delete avatarPending[key];
+        for (var i = 0; i < cbs.length; i++) cbs[i]('');
+      }
+    });
+  }
+
   function updateUnreadBadge(key, count) {
     if (!floatingWindows[key]) return;
     floatingWindows[key].unreadCount = count;
@@ -2412,7 +2443,6 @@
 
     var avatarImg = document.createElement('img');
     avatarImg.className = 'xchat-fw-header-avatar';
-    avatarImg.src = 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
     avatarImg.alt = nick;
     avatarLink.appendChild(avatarImg);
 
@@ -2544,9 +2574,13 @@
 
     var headImg = document.createElement('img');
     headImg.className = 'xchat-fw-head-img';
-    headImg.src = 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
     headImg.alt = nick;
     head.appendChild(headImg);
+
+    // Load avatar once via cache, assign to both header and head images
+    loadAvatarUrl(nick, function (url) {
+      if (url) { avatarImg.src = url; headImg.src = url; }
+    });
 
     // Close button on head
     var headClose = document.createElement('span');
