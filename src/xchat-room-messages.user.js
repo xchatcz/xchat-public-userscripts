@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.1
+// @version      1.3.2
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -977,37 +977,41 @@
     };
     window.addEventListener('unload', state.unloadHandler);
 
-    try {
-      var metaRefresh = frames.dataFrame.document.querySelector('meta[http-equiv="Refresh" i]');
-      if (metaRefresh) metaRefresh.remove();
-    } catch {}
+    // Navigate dataframe to about:blank to kill the native refresh cycle.
+    // Removing <meta http-equiv="Refresh"> is not enough — the browser has
+    // already parsed and scheduled the navigation before the userscript runs,
+    // so the dataframe keeps reloading (and fetching CSS) every few seconds.
+    // Navigating away breaks the cycle completely.
+    try { frames.dataFrame.stop(); } catch {}
+    try { frames.dataFrame.location.replace('about:blank'); } catch {}
 
-    try {
-      if (frames.dataFrame.document && frames.dataFrame.document.body) {
-        frames.dataFrame.document.body.removeAttribute('onload');
-      }
-    } catch {}
-
-    // Permanently trap refresh/doLoad on dataframe so even late native re‑assignment is harmless
+    // Permanently trap refresh/doLoad on dataframe so even late native re‑assignment is harmless.
+    // Re-apply traps after about:blank loads (the old window context is replaced).
     var noop = function () {};
     noop._xchatNoOp = true;
-    var dfTargets = [];
-    try { dfTargets.push(frames.dataFrame); } catch {}
-    try { if (frames.dataFrame.window && frames.dataFrame.window !== frames.dataFrame) dfTargets.push(frames.dataFrame.window); } catch {}
-    dfTargets.forEach(function (target) {
-      ['refresh', 'doLoad'].forEach(function (fnName) {
-        try {
-          Object.defineProperty(target, fnName, {
-            get: function () { return noop; },
-            set: function () { /* swallow native assignment */ },
-            configurable: true,
-            enumerable: true
-          });
-        } catch {
-          try { target[fnName] = noop; } catch {}
-        }
+    function applyRefreshTraps() {
+      var dfTargets = [];
+      try { dfTargets.push(frames.dataFrame); } catch {}
+      try { if (frames.dataFrame.window && frames.dataFrame.window !== frames.dataFrame) dfTargets.push(frames.dataFrame.window); } catch {}
+      dfTargets.forEach(function (target) {
+        ['refresh', 'doLoad'].forEach(function (fnName) {
+          try {
+            Object.defineProperty(target, fnName, {
+              get: function () { return noop; },
+              set: function () { /* swallow native assignment */ },
+              configurable: true,
+              enumerable: true
+            });
+          } catch {
+            try { target[fnName] = noop; } catch {}
+          }
+        });
       });
-    });
+    }
+    applyRefreshTraps();
+    // Re-apply after about:blank finishes loading (async)
+    setTimeout(applyRefreshTraps, 50);
+    setTimeout(applyRefreshTraps, 200);
 
     // Kill current native timer and re‑kill periodically to catch late native setup
     function killNativeCID() {
@@ -1025,6 +1029,43 @@
       cidKillCount++;
       if (cidKillCount >= 10) clearInterval(cidKillTimer);
     }, 500);
+
+    // Persistent guard: if native code somehow navigates the dataframe again,
+    // immediately kill CSS loads and meta refresh in the newly loaded page,
+    // then re-apply refresh traps.
+    if (!window.top._xchatDataFrameLoadGuard) {
+      window.top._xchatDataFrameLoadGuard = true;
+      try {
+        var roomFrame = window.top.roomframe;
+        var dfFrameEl = roomFrame && roomFrame.document
+          ? (roomFrame.document.querySelector('frame[name="dataframe"]') ||
+             roomFrame.document.querySelectorAll('frame')[1])
+          : null;
+        if (dfFrameEl) {
+          dfFrameEl.addEventListener('load', function () {
+            try {
+              var dfWin = dfFrameEl.contentWindow;
+              if (!dfWin) return;
+              var href = '';
+              try { href = dfWin.location.href; } catch { return; }
+              if (href === 'about:blank' || !href) return;
+              // Stop pending resource loads (CSS), remove meta refresh
+              try { dfWin.stop(); } catch {}
+              try {
+                var meta = dfWin.document.querySelector('meta[http-equiv="Refresh" i]');
+                if (meta) meta.remove();
+              } catch {}
+              try {
+                var links = dfWin.document.querySelectorAll('link[rel="stylesheet"]');
+                for (var i = 0; i < links.length; i++) links[i].remove();
+              } catch {}
+              // Navigate back to blank
+              try { dfWin.location.replace('about:blank'); } catch {}
+            } catch {}
+          });
+        }
+      } catch {}
+    }
 
     updateMainBoardCountdown(state, true);
     state.infoCountdownTimer = setInterval(function () {
