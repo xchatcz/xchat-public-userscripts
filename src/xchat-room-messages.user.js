@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.7
+// @version      1.3.8
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -3803,8 +3803,9 @@
     hlContainer.parentNode.insertBefore(settingsSpan, hlContainer.nextSibling);
 
     // ── Countdown override ──
-
-    ensureLightweightMainBoardRefreshInstalled();
+    // Board refresh is owned by startframe — do NOT call ensureLightweightMainBoardRefreshInstalled
+    // from infopage, because clearTimeout cannot cancel timers from another frame's context,
+    // which would cause duplicate simultaneous fetch requests.
     setupCountdown();
   }
 
@@ -4305,9 +4306,8 @@
       try { installWhisperOverride(); } catch {}
 
       overlay.remove();
-      // Restart countdown in infopage
+      // Restart countdown in infopage (board refresh is owned by startframe)
       try {
-        ensureLightweightMainBoardRefreshInstalled();
         setupCountdown();
       } catch {}
       // Sync highlight toggle on infopage
