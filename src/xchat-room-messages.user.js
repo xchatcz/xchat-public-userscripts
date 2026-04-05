@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.4.2
+// @version      1.4.3
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.4.2';
+  var SCRIPT_VERSION = '1.4.3';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -354,7 +354,7 @@
   }
 
   function isKickHighlightOn() {
-    return getSetting('kickHighlight', false);
+    return getSetting('kickHighlight', true);
   }
 
   function isHideBadCommands() {
@@ -375,12 +375,12 @@
   }
 
   function getFwMaxMessages() {
-    var v = getSetting('fwMaxMessages', 100);
-    return Math.max(1, parseInt(v, 10) || 100);
+    var v = getSetting('fwMaxMessages', 20);
+    return Math.max(1, parseInt(v, 10) || 20);
   }
 
   function getFwAutoOpen() {
-    var v = getSetting('fwAutoOpen', 'none');
+    var v = getSetting('fwAutoOpen', 'bubble');
     // Migrate old boolean values
     if (v === true) return 'window';
     if (v === false) return 'none';
@@ -1948,7 +1948,7 @@
   }
 
   function isHighlightOn() {
-    return getSetting('highlight', false);
+    return getSetting('highlight', true);
   }
 
   function applyHighlight(on) {
@@ -3774,7 +3774,7 @@
           try { if (typeof window.top._xchatUpdateFloatingRoomNames === 'function') window.top._xchatUpdateFloatingRoomNames(); } catch {}
         }
         // Show RID in parentheses after room name link
-        if (getSetting('showRid', true)) {
+        if (getSetting('showRid', false)) {
           roomLinks[ri].parentNode.insertBefore(document.createTextNode(' (' + rid + ')'), roomLinks[ri].nextSibling);
         }
         break;
@@ -4120,7 +4120,7 @@
     var ridCheckbox = targetDoc.createElement('input');
     ridCheckbox.type = 'checkbox';
     ridCheckbox.id = 'xchat-show-rid-toggle';
-    ridCheckbox.checked = getSetting('showRid', true);
+    ridCheckbox.checked = getSetting('showRid', false);
     ridRow.appendChild(ridCheckbox);
     var ridLabel = targetDoc.createElement('label');
     ridLabel.htmlFor = 'xchat-show-rid-toggle';
