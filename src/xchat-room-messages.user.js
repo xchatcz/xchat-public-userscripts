@@ -14,6 +14,8 @@
 (function () {
   'use strict';
 
+  var SCRIPT_VERSION = '1.3.2';
+
   // Must match the domain relaxation used by all xchat frames,
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
   try { document.domain = 'xchat.cz'; } catch {}
@@ -3519,6 +3521,7 @@
       showSettingsModal();
     });
     settingsSpan.appendChild(settingsLink);
+    settingsSpan.appendChild(document.createTextNode(' \u2013 Version: ' + SCRIPT_VERSION));
     hlContainer.parentNode.insertBefore(settingsSpan, hlContainer.nextSibling);
 
     // ── Countdown override ──
