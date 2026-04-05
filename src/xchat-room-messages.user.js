@@ -457,6 +457,26 @@
     return pad(m) + ':' + pad(s);
   }
 
+  function startIdleLiveTimer(span, initialTimeStr) {
+    var idleBaseSec = parseIdleToSeconds(initialTimeStr);
+    var idleBaseTime = Date.now();
+    try {
+      window.top._xchatIdleBaseSec = idleBaseSec;
+      window.top._xchatIdleBaseTime = idleBaseTime;
+      window.top._xchatIdleSpan = span;
+    } catch {}
+    setInterval(function () {
+      var baseSec, baseTime;
+      try {
+        baseSec = window.top._xchatIdleBaseSec;
+        baseTime = window.top._xchatIdleBaseTime;
+      } catch { return; }
+      if (baseSec == null || !baseTime) return;
+      var elapsed = baseSec + Math.floor((Date.now() - baseTime) / 1000);
+      span.textContent = formatIdleTime(elapsed);
+    }, 1000);
+  }
+
   function setCustomGreeting(nick, text) {
     var data = getGreetings();
     if (text) data[nick] = text;
@@ -3550,6 +3570,15 @@
   // ── Infopage: filter links ──
 
   function initInfopage() {
+    // ── Prevent native infopage auto-reload ──
+    // The infopage has <meta http-equiv="Refresh"> which would reload the page
+    // every few seconds, killing any setInterval (IDLE timer, etc.).
+    // The lightweight board polling + infoCountdownTimer handle refresh/countdown.
+    try {
+      var metaRefresh = document.querySelector('meta[http-equiv="Refresh" i]');
+      if (metaRefresh) metaRefresh.remove();
+    } catch {}
+
     // ── Extract numeric RID and room name from infopage ──
     var roomLinks = document.querySelectorAll('a[href*="roominfo"]');
     for (var ri = 0; ri < roomLinks.length; ri++) {
@@ -3575,55 +3604,28 @@
       }
     }
 
-    // Rename "Nemluvil jsi:" to "IDLE:" and make the timer live
-    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-    var node;
-    while ((node = walker.nextNode())) {
-      if (node.textContent.indexOf('Nemluvil jsi:') !== -1) {
-        // Expected text: "... Nemluvil jsi: MM:SS ..." or "... Nemluvil jsi: HH:MM:SS ..."
-        var idleMatch = node.textContent.match(/Nemluvil jsi:\s*((\d{1,2}:)?\d{1,2}:\d{2})/);
-        if (idleMatch) {
-          var idleTimeStr = idleMatch[1];
-          var beforeText = node.textContent.substring(0, idleMatch.index);
-          var afterText = node.textContent.substring(idleMatch.index + idleMatch[0].length);
-          var parent = node.parentNode;
-
-          // Replace text node with: "... IDLE: " + <span id="xchat-idle-timer">MM:SS</span> + rest
-          var beforeNode = document.createTextNode(beforeText + 'IDLE: ');
-          var idleSpan = document.createElement('span');
-          idleSpan.id = 'xchat-idle-timer';
-          idleSpan.textContent = idleTimeStr;
-          var afterNode = document.createTextNode(afterText);
-
-          parent.insertBefore(beforeNode, node);
-          parent.insertBefore(idleSpan, node);
-          parent.insertBefore(afterNode, node);
-          parent.removeChild(node);
-
-          // Initialize live idle timer
-          var idleBaseSec = parseIdleToSeconds(idleTimeStr);
-          var idleBaseTime = Date.now();
-          try {
-            window.top._xchatIdleBaseSec = idleBaseSec;
-            window.top._xchatIdleBaseTime = idleBaseTime;
-            window.top._xchatIdleSpan = idleSpan;
-          } catch {}
-
-          setInterval(function () {
-            var baseSec, baseTime;
-            try {
-              baseSec = window.top._xchatIdleBaseSec;
-              baseTime = window.top._xchatIdleBaseTime;
-            } catch { return; }
-            if (baseSec == null || !baseTime) return;
-            var elapsed = baseSec + Math.floor((Date.now() - baseTime) / 1000);
-            idleSpan.textContent = formatIdleTime(elapsed);
-          }, 1000);
-        } else {
-          node.textContent = node.textContent.replace('Nemluvil jsi:', 'IDLE:');
+    // Rename "Nemluvil jsi:" to "IDLE:" and make the timer live.
+    // Use innerHTML regex that allows HTML tags between the label and time value
+    // (handles <font>Nemluvil jsi: </font><b>04:40</b> and similar structures).
+    var bodyHtml = document.body.innerHTML;
+    // Pattern: "Nemluvil jsi:" + optional whitespace/tags + time (MM:SS or HH:MM:SS)
+    var idleInnerMatch = bodyHtml.match(/Nemluvil jsi:((?:\s|<[^>]*>)*)((\d{1,2}:)?\d{1,2}:\d{2})/);
+    if (idleInnerMatch) {
+      var idleTimeVal = idleInnerMatch[2];
+      // Check if the timer was previously reset (user sent a message) — use persisted base
+      try {
+        if (window.top._xchatIdleBaseTime) {
+          var idleElapsed = window.top._xchatIdleBaseSec + Math.floor((Date.now() - window.top._xchatIdleBaseTime) / 1000);
+          idleTimeVal = formatIdleTime(idleElapsed);
         }
-        break;
-      }
+      } catch {}
+      // Replace in innerHTML: keep the intermediate tags, wrap time in span
+      document.body.innerHTML = bodyHtml.replace(
+        /Nemluvil jsi:((?:\s|<[^>]*>)*)((\d{1,2}:)?\d{1,2}:\d{2})/,
+        'IDLE:$1<span id="xchat-idle-timer">' + idleTimeVal + '</span>'
+      );
+      var idleSpan = document.getElementById('xchat-idle-timer');
+      if (idleSpan) startIdleLiveTimer(idleSpan, idleTimeVal);
     }
 
     // Remove "smazat" link
