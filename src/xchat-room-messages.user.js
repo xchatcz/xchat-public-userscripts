@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.6
+// @version      1.3.7
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
 // @match        https://www.xchat.cz/*/modchat?op=titlepage*
+// @match        https://www.xchat.cz/*/modchat?op=reloadpage*
 // @match        https://www.xchat.cz/*/history.html*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
@@ -231,6 +232,10 @@
     // Callback: aktualizuje odpočet a volá dataframe.refresh() když counter=0
     // Aktivní jen když refreshInterval > 0 v nastavení.
     countdownRefresh:  { enabled: true, description: 'Odpočet a auto-refresh skla (nastavitelný interval)' },
+
+    // setTimeout(60000) – polling reloadpage (userlist) bez nativního meta-refresh
+    // Callback: fetch reloadpage, parse users/vips JS, aktualizuje DOM bez re-stahování statických souborů
+    reloadpagePoll:    { enabled: true, intervalMs: 60000, description: 'Polling uživatelského seznamu bez reload statických souborů' },
   };
 
   // ══════════════════════════════════════════════════════════════════
@@ -5396,12 +5401,77 @@
     observer.observe(board, { childList: true });
   }
 
+  // ── Reloadpage: prevent repeated downloads of static JS/CSS ──
+
+  function initReloadpage() {
+    // Kill the native <meta http-equiv="Refresh" content="60" /> so the page
+    // doesn't fully reload every 60s (re-downloading prototype.js, userlist-1.03.js, rm8.css).
+    try {
+      var metaRefresh = document.querySelector('meta[http-equiv="Refresh" i]');
+      if (metaRefresh) metaRefresh.remove();
+    } catch {}
+
+    if (!TIMERS.reloadpagePoll.enabled) return;
+
+    var reloadUrl = location.href;
+
+    function runReloadpagePoll() {
+      var url = reloadUrl + (reloadUrl.indexOf('?') >= 0 ? '&' : '?') + '_t=' + Date.now();
+      enqueueXchatHtmlJob('reloadpage-poll', function () {
+        return fetch(url, {
+          method: 'GET',
+          credentials: 'include',
+          headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+        }).then(function (r) { return r.arrayBuffer(); })
+          .then(function (buf) {
+            return new TextDecoder('iso-8859-2').decode(buf);
+          });
+      }).then(function (html) {
+        if (!html) return;
+        // Extract the inline <script> block that defines users/vips arrays
+        // and calls updateChatters()/updateVIPs().
+        var scriptMatch = html.match(/<script[^>]*>([\s\S]*?)<\/script>/i);
+        if (!scriptMatch) return;
+        var scriptBody = scriptMatch[1]
+          .replace(/<!--/, '')
+          .replace(/-->/, '')
+          .trim();
+        // Extract only "var users=..." and "var vips=..." lines + update calls.
+        // We must NOT re-execute function definitions (User, chatterLink, etc.)
+        // because they are already loaded from the initial page load.
+        var usersMatch = scriptBody.match(/var users\s*=\s*new Array\([\s\S]*?\);/);
+        var vipsMatch = scriptBody.match(/var vips\s*=\s*new Array\([\s\S]*?\);/);
+        if (!usersMatch) return;
+        var evalCode = usersMatch[0] + '\n';
+        if (vipsMatch) evalCode += vipsMatch[0] + '\n';
+        evalCode += 'updateChatters();\nupdateVIPs();\n';
+        // Check for MWZfilter call
+        if (/MWZfilter/.test(scriptBody)) {
+          evalCode += 'if (typeof window.parent.MWZfilter !== "undefined") { window.parent.MWZfilter(); }\n';
+        }
+        try {
+          var fn = new Function(evalCode);
+          fn.call(window);
+        } catch (e) {
+          console.error('[xchat-rm] reloadpage poll eval error:', e);
+        }
+      }).catch(function (e) {
+        console.error('[xchat-rm] reloadpage poll fetch error:', e);
+      }).finally(function () {
+        setTimeout(runReloadpagePoll, TIMERS.reloadpagePoll.intervalMs);
+      });
+    }
+
+    setTimeout(runReloadpagePoll, TIMERS.reloadpagePoll.intervalMs);
+  }
+
   // ── Boot ──
 
   function boot() {
     var op = getOpParam();
     if (op === 'startframe') initStartframe();
     else if (op === 'infopage') initInfopage();
+    else if (op === 'reloadpage') initReloadpage();
     else if (/history\.html/.test(location.pathname)) initHistoryPage();
   }
 
