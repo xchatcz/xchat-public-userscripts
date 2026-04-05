@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.4.0
+// @version      1.4.2
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
 // @match        https://www.xchat.cz/*/modchat?op=titlepage*
 // @match        https://www.xchat.cz/*/modchat?op=reloadpage*
+// @match        https://www.xchat.cz/*/modchat?op=roomframeng*
 // @match        https://www.xchat.cz/*/history.html*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
@@ -19,7 +20,14 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.3.7';
+  var SCRIPT_VERSION = '1.4.2';
+
+  // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
+  (function () {
+    var s = document.createElement('style');
+    s.textContent = '#ffc, #ffd { display: none !important; }';
+    document.documentElement.appendChild(s);
+  })();
 
   // Must match the domain relaxation used by all xchat frames,
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
