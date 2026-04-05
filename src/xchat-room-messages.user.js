@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.6.6
+// @version      1.6.9
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.6.6';
+  var SCRIPT_VERSION = '1.6.9';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2122,62 +2122,25 @@
     avatarPending[key] = [callback];
     var avatarUrl = getAvatarDirectUrl(nick);
 
-    function finish(blobUrl, defaultType) {
-      if (blobUrl) avatarCache[key] = blobUrl;
+    function finish(defaultType) {
       avatarDefaultTypeCache[key] = defaultType;
+      avatarCache[key] = avatarUrl;
       var cbs = avatarPending[key] || [];
       delete avatarPending[key];
-      for (var i = 0; i < cbs.length; i++) cbs[i](blobUrl || '', defaultType);
+      for (var i = 0; i < cbs.length; i++) cbs[i](avatarUrl, defaultType);
     }
 
-    function loadImageBlob(imgUrl, defaultType) {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: imgUrl,
-        responseType: 'arraybuffer',
-        onload: function (resp) {
-          var blobUrl = '';
-          try {
-            var ct = resp.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg';
-            blobUrl = URL.createObjectURL(new Blob([resp.response], { type: ct }));
-          } catch (e) { /* ignore */ }
-          finish(blobUrl, defaultType);
-        },
-        onerror: function () { finish('', defaultType); }
+    // Use native fetch (same-origin to www.xchat.cz) – browser follows 302 redirect,
+    // response.url contains the final URL (e.g. ximg.cz/x4/pict_muz.gif).
+    // This avoids GM_xmlhttpRequest which fails on cross-domain redirects.
+    // The actual image is loaded by <img src> independently.
+    fetch(avatarUrl)
+      .then(function (resp) {
+        finish(detectDefaultAvatar(resp.url || ''));
+      })
+      .catch(function () {
+        finish(null);
       });
-    }
-
-    try {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: avatarUrl,
-        responseType: 'arraybuffer',
-        onload: function (resp) {
-          // Case 1: GM did NOT follow redirect – we got the 302 response directly
-          if (resp.status >= 300 && resp.status < 400) {
-            var loc = (resp.responseHeaders || '').match(/^location:\s*(.+)$/mi);
-            var locationUrl = loc ? loc[1].trim() : '';
-            var defaultType = detectDefaultAvatar(locationUrl);
-            if (locationUrl) {
-              // Load actual image from the redirect target
-              loadImageBlob(locationUrl, defaultType);
-            } else {
-              finish('', null);
-            }
-            return;
-          }
-          // Case 2: GM followed the redirect – we got the final image
-          var blobUrl = '';
-          try {
-            var ct = resp.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg';
-            blobUrl = URL.createObjectURL(new Blob([resp.response], { type: ct }));
-          } catch (e) { /* ignore */ }
-          var defaultType2 = detectDefaultAvatar(resp.finalUrl || '');
-          finish(blobUrl, defaultType2);
-        },
-        onerror: function () { finish('', null); }
-      });
-    } catch (e) { finish('', null); }
   }
 
   function updateUnreadBadge(key, count) {
