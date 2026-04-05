@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.4
+// @version      1.3.6
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.3.4';
+  var SCRIPT_VERSION = '1.3.7';
 
   // Must match the domain relaxation used by all xchat frames,
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
@@ -457,24 +457,56 @@
     return pad(m) + ':' + pad(s);
   }
 
-  function startIdleLiveTimer(span, initialTimeStr) {
-    var idleBaseSec = parseIdleToSeconds(initialTimeStr);
-    var idleBaseTime = Date.now();
+  function getIdleTimerEl() {
+    // Dynamically look up the IDLE element cross-frame (renamed from #idle to #idle-orig)
     try {
-      window.top._xchatIdleBaseSec = idleBaseSec;
-      window.top._xchatIdleBaseTime = idleBaseTime;
-      window.top._xchatIdleSpan = span;
+      var infoWin = window.top.infopage || window.top.frames.infopage || window.top.frames[2];
+      if (infoWin && infoWin.document) return infoWin.document.getElementById('idle-orig');
     } catch {}
+    try { return document.getElementById('idle-orig'); } catch {}
+    return null;
+  }
+
+  function startIdleLiveTimer(el, initialTimeStr) {
+    var baseSec = parseIdleToSeconds(initialTimeStr);
+    var baseTime = Date.now();
+    try {
+      window.top._xchatIdleBaseSec = baseSec;
+      window.top._xchatIdleBaseTime = baseTime;
+    } catch {}
+    // Direct setInterval updating the element reference every second.
+    // Native infopage refresh is killed (meta, cd, cID) so this survives.
     setInterval(function () {
-      var baseSec, baseTime;
       try {
-        baseSec = window.top._xchatIdleBaseSec;
-        baseTime = window.top._xchatIdleBaseTime;
-      } catch { return; }
-      if (baseSec == null || !baseTime) return;
-      var elapsed = baseSec + Math.floor((Date.now() - baseTime) / 1000);
-      span.textContent = formatIdleTime(elapsed);
+        var bs = window.top._xchatIdleBaseSec;
+        var bt = window.top._xchatIdleBaseTime;
+        if (bs == null || !bt) return;
+        var elapsed = bs + Math.floor((Date.now() - bt) / 1000);
+        el.textContent = formatIdleTime(elapsed);
+      } catch {}
     }, 1000);
+  }
+
+  function syncIdleFromServer() {
+    var nick = getSetting('myNick');
+    if (!nick) return;
+    var rid = getRoomId();
+    if (!rid || rid === 'unknown') return;
+    fetchWonline(nick).then(function (result) {
+      if (!result.online || !result.rooms.length) return;
+      for (var i = 0; i < result.rooms.length; i++) {
+        if (String(result.rooms[i].rid) === String(rid)) {
+          var idleSec = parseIdleToSeconds(result.rooms[i].idle);
+          try {
+            window.top._xchatIdleBaseSec = idleSec;
+            window.top._xchatIdleBaseTime = Date.now();
+            var el = getIdleTimerEl();
+            if (el) el.textContent = formatIdleTime(idleSec);
+          } catch {}
+          return;
+        }
+      }
+    }).catch(function () {});
   }
 
   function setCustomGreeting(nick, text) {
@@ -820,9 +852,10 @@
     try {
       window.top._xchatIdleBaseSec = 0;
       window.top._xchatIdleBaseTime = Date.now();
-      var span = window.top._xchatIdleSpan;
-      if (span) span.textContent = '00:00';
+      var el = getIdleTimerEl();
+      if (el) el.textContent = '00:00';
     } catch {}
+    syncIdleFromServer();
   }
 
   function checkOutgoingAndResetIdle(div) {
@@ -1031,6 +1064,7 @@
       .finally(function () {
         state.inFlight = false;
         updateMainBoardCountdown(state, true);
+        syncIdleFromServer();
         scheduleMainBoardRefresh(state);
       });
   }
@@ -3605,27 +3639,42 @@
     }
 
     // Rename "Nemluvil jsi:" to "IDLE:" and make the timer live.
-    // Use innerHTML regex that allows HTML tags between the label and time value
-    // (handles <font>Nemluvil jsi: </font><b>04:40</b> and similar structures).
-    var bodyHtml = document.body.innerHTML;
-    // Pattern: "Nemluvil jsi:" + optional whitespace/tags + time (MM:SS or HH:MM:SS)
-    var idleInnerMatch = bodyHtml.match(/Nemluvil jsi:((?:\s|<[^>]*>)*)((\d{1,2}:)?\d{1,2}:\d{2})/);
-    if (idleInnerMatch) {
-      var idleTimeVal = idleInnerMatch[2];
-      // Check if the timer was previously reset (user sent a message) — use persisted base
+    // The native infopage uses <strong id="idle">MM:SS</strong> for the time.
+    // We rename its id so native JS (cd() etc.) can no longer find/overwrite it,
+    // then start our own setInterval that ticks directly on the element.
+    var idleEl = document.getElementById('idle');
+    if (idleEl) {
+      // Rename id so native cd() function can't overwrite our timer
+      idleEl.id = 'idle-orig';
+
+      // Replace "Nemluvil jsi:" label with "IDLE:" in the preceding text node(s)
+      var prevNode = idleEl.previousSibling;
+      while (prevNode) {
+        if (prevNode.nodeType === Node.TEXT_NODE && /Nemluvil jsi:/i.test(prevNode.textContent)) {
+          prevNode.textContent = prevNode.textContent.replace(/Nemluvil jsi:/i, 'IDLE:');
+          break;
+        }
+        // Could be inside a preceding element
+        if (prevNode.nodeType === Node.ELEMENT_NODE && /Nemluvil jsi:/i.test(prevNode.textContent)) {
+          prevNode.innerHTML = prevNode.innerHTML.replace(/Nemluvil jsi:/i, 'IDLE:');
+          break;
+        }
+        prevNode = prevNode.previousSibling;
+      }
+
+      var serverIdleTime = idleEl.textContent.trim();
+      var idleTimeVal = serverIdleTime;
+      // If the timer was previously started/reset, use persisted base
       try {
         if (window.top._xchatIdleBaseTime) {
           var idleElapsed = window.top._xchatIdleBaseSec + Math.floor((Date.now() - window.top._xchatIdleBaseTime) / 1000);
           idleTimeVal = formatIdleTime(idleElapsed);
         }
       } catch {}
-      // Replace in innerHTML: keep the intermediate tags, wrap time in span
-      document.body.innerHTML = bodyHtml.replace(
-        /Nemluvil jsi:((?:\s|<[^>]*>)*)((\d{1,2}:)?\d{1,2}:\d{2})/,
-        'IDLE:$1<span id="xchat-idle-timer">' + idleTimeVal + '</span>'
-      );
-      var idleSpan = document.getElementById('xchat-idle-timer');
-      if (idleSpan) startIdleLiveTimer(idleSpan, idleTimeVal);
+      idleEl.textContent = idleTimeVal;
+      startIdleLiveTimer(idleEl, idleTimeVal);
+      // Fetch real idle time from server (wonline) to correct the initial value
+      syncIdleFromServer();
     }
 
     // Remove "smazat" link
@@ -3771,6 +3820,20 @@
 
     if (TIMERS.mainBoardPoll.enabled) {
       refreshEl.textContent = String(customSec);
+      // Kill native infopage auto-refresh JS (cd, refresh, doLoad etc.)
+      try { document.body.removeAttribute('onload'); } catch {}
+      var _noop = function () {};
+      ['cd', 'refresh', 'doLoad'].forEach(function (fn) {
+        try {
+          Object.defineProperty(window, fn, {
+            get: function () { return _noop; },
+            set: function () {},
+            configurable: true
+          });
+        } catch { try { window[fn] = _noop; } catch {} }
+      });
+      // Kill any native cID/timer
+      try { if (window.cID) { clearInterval(window.cID); window.cID = null; } } catch {}
       return;
     }
 
