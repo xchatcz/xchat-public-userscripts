@@ -20,6 +20,73 @@
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
   try { document.domain = 'xchat.cz'; } catch {}
 
+  // ── Block tracking / analytics scripts ──
+  var BLOCKED_SCRIPT_HOSTS = ['assets.adobedtm.com'];
+
+  function isBlockedSrc(src) {
+    if (!src) return false;
+    for (var i = 0; i < BLOCKED_SCRIPT_HOSTS.length; i++) {
+      if (src.indexOf(BLOCKED_SCRIPT_HOSTS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function blockTrackingInDoc(doc) {
+    if (!doc || doc._xchatTrackBlocked) return;
+    doc._xchatTrackBlocked = true;
+    // Remove existing script tags
+    try {
+      var scripts = doc.querySelectorAll('script[src]');
+      for (var si = 0; si < scripts.length; si++) {
+        if (isBlockedSrc(scripts[si].src)) scripts[si].remove();
+      }
+    } catch {}
+    // Watch for dynamically inserted scripts
+    try {
+      new MutationObserver(function (muts) {
+        for (var m = 0; m < muts.length; m++) {
+          var added = muts[m].addedNodes;
+          for (var n = 0; n < added.length; n++) {
+            var nd = added[n];
+            if (nd.nodeType !== 1) continue;
+            if (nd.tagName === 'SCRIPT' && isBlockedSrc(nd.src)) { nd.remove(); continue; }
+            try {
+              var nested = nd.querySelectorAll && nd.querySelectorAll('script[src]');
+              if (nested) for (var c = 0; c < nested.length; c++) {
+                if (isBlockedSrc(nested[c].src)) nested[c].remove();
+              }
+            } catch {}
+          }
+        }
+      }).observe(doc.documentElement || doc, { childList: true, subtree: true });
+    } catch {}
+  }
+
+  function blockTrackingInAllFrames() {
+    try { blockTrackingInDoc(document); } catch {}
+    try { blockTrackingInDoc(window.top.document); } catch {}
+    try {
+      var topFrames = window.top.frames;
+      for (var i = 0; i < topFrames.length; i++) {
+        try { blockTrackingInDoc(topFrames[i].document); } catch {}
+        try {
+          var sub = topFrames[i].frames;
+          for (var j = 0; j < sub.length; j++) {
+            try { blockTrackingInDoc(sub[j].document); } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // Run immediately and re-check for newly loaded frames
+  blockTrackingInAllFrames();
+  var _trackBlockCount = 0;
+  var _trackBlockTimer = setInterval(function () {
+    blockTrackingInAllFrames();
+    if (++_trackBlockCount >= 10) clearInterval(_trackBlockTimer);
+  }, 1000);
+
   // ── Konfigurace ──
   var CONFIG = {
     myNick: '',
