@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.4.4
+// @version      1.4.5
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.4.4';
+  var SCRIPT_VERSION = '1.4.5';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2710,6 +2710,9 @@
     // ── Body (startframe iframe, filled after fetch) ──
     var body = document.createElement('div');
     body.className = 'xchat-fw-body';
+    var spinner = document.createElement('div');
+    spinner.className = 'xchat-fw-spinner';
+    body.appendChild(spinner);
     fw.appendChild(body);
 
     // ── Footer (textpageng iframe, filled after fetch) ──
@@ -5264,6 +5267,24 @@
       '  word-wrap: break-word;',
       '  padding: 4px;',
       '  background: ' + skinColorBg + ';',
+      '}',
+      '@keyframes xchat-fw-spin {',
+      '  to { transform: rotate(360deg); }',
+      '}',
+      '.xchat-fw-spinner {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  height: 100%;',
+      '}',
+      '.xchat-fw-spinner::after {',
+      '  content: "";',
+      '  width: 28px;',
+      '  height: 28px;',
+      '  border: 3px solid #ddd;',
+      '  border-top-color: ' + skinColorAccent + ';',
+      '  border-radius: 50%;',
+      '  animation: xchat-fw-spin .6s linear infinite;',
       '}',
       '.xchat-fw-footer {',
       '  background: ' + skinColorLight + ';',
