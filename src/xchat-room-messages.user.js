@@ -977,41 +977,39 @@
     };
     window.addEventListener('unload', state.unloadHandler);
 
-    // Navigate dataframe to about:blank to kill the native refresh cycle.
-    // Removing <meta http-equiv="Refresh"> is not enough — the browser has
-    // already parsed and scheduled the navigation before the userscript runs,
-    // so the dataframe keeps reloading (and fetching CSS) every few seconds.
-    // Navigating away breaks the cycle completely.
-    try { frames.dataFrame.stop(); } catch {}
-    try { frames.dataFrame.location.replace('about:blank'); } catch {}
+    // Kill the current dataframe's native refresh triggers so it doesn't
+    // schedule a re-navigation (meta refresh, body onload, JS functions).
+    try {
+      var metaRefresh = frames.dataFrame.document.querySelector('meta[http-equiv="Refresh" i]');
+      if (metaRefresh) metaRefresh.remove();
+    } catch {}
 
-    // Permanently trap refresh/doLoad on dataframe so even late native re‑assignment is harmless.
-    // Re-apply traps after about:blank loads (the old window context is replaced).
+    try {
+      if (frames.dataFrame.document && frames.dataFrame.document.body) {
+        frames.dataFrame.document.body.removeAttribute('onload');
+      }
+    } catch {}
+
+    // Permanently trap refresh/doLoad on dataframe so even late native re‑assignment is harmless
     var noop = function () {};
     noop._xchatNoOp = true;
-    function applyRefreshTraps() {
-      var dfTargets = [];
-      try { dfTargets.push(frames.dataFrame); } catch {}
-      try { if (frames.dataFrame.window && frames.dataFrame.window !== frames.dataFrame) dfTargets.push(frames.dataFrame.window); } catch {}
-      dfTargets.forEach(function (target) {
-        ['refresh', 'doLoad'].forEach(function (fnName) {
-          try {
-            Object.defineProperty(target, fnName, {
-              get: function () { return noop; },
-              set: function () { /* swallow native assignment */ },
-              configurable: true,
-              enumerable: true
-            });
-          } catch {
-            try { target[fnName] = noop; } catch {}
-          }
-        });
+    var dfTargets = [];
+    try { dfTargets.push(frames.dataFrame); } catch {}
+    try { if (frames.dataFrame.window && frames.dataFrame.window !== frames.dataFrame) dfTargets.push(frames.dataFrame.window); } catch {}
+    dfTargets.forEach(function (target) {
+      ['refresh', 'doLoad'].forEach(function (fnName) {
+        try {
+          Object.defineProperty(target, fnName, {
+            get: function () { return noop; },
+            set: function () { /* swallow native assignment */ },
+            configurable: true,
+            enumerable: true
+          });
+        } catch {
+          try { target[fnName] = noop; } catch {}
+        }
       });
-    }
-    applyRefreshTraps();
-    // Re-apply after about:blank finishes loading (async)
-    setTimeout(applyRefreshTraps, 50);
-    setTimeout(applyRefreshTraps, 200);
+    });
 
     // Kill current native timer and re‑kill periodically to catch late native setup
     function killNativeCID() {
@@ -1030,9 +1028,14 @@
       if (cidKillCount >= 10) clearInterval(cidKillTimer);
     }, 500);
 
-    // Persistent guard: if native code somehow navigates the dataframe again,
-    // immediately kill CSS loads and meta refresh in the newly loaded page,
-    // then re-apply refresh traps.
+    // Persistent load guard on the <frame> element itself (survives cross-document
+    // navigations).  The FIRST dataframe load is needed — it populates the board
+    // with initial messages and hides the native "Nahrávám…" indicator.  Any
+    // SUBSEQUENT load of a roomtopng page is a native refresh that we must kill
+    // because each such navigation re-fetches rm2.css and other resources.
+    // Removing <meta http-equiv="Refresh"> is insufficient — the browser has
+    // already parsed and scheduled the navigation before the userscript runs.
+    // The load guard catches these escape-hatch navigations reliably.
     if (!window.top._xchatDataFrameLoadGuard) {
       window.top._xchatDataFrameLoadGuard = true;
       try {
@@ -1048,18 +1051,31 @@
               if (!dfWin) return;
               var href = '';
               try { href = dfWin.location.href; } catch { return; }
-              if (href === 'about:blank' || !href) return;
-              // Stop pending resource loads (CSS), remove meta refresh
+              // Ignore loads of about:blank (our own navigation)
+              if (!href || href === 'about:blank') return;
+              // This is a native refresh — kill it:
+              // 1. Stop pending sub-resource loads (rm2.css etc.)
               try { dfWin.stop(); } catch {}
+              // 2. Remove meta refresh so the browser doesn't schedule another nav
               try {
                 var meta = dfWin.document.querySelector('meta[http-equiv="Refresh" i]');
                 if (meta) meta.remove();
               } catch {}
+              // 3. Remove stylesheet links to prevent CSS from loading
               try {
                 var links = dfWin.document.querySelectorAll('link[rel="stylesheet"]');
-                for (var i = 0; i < links.length; i++) links[i].remove();
+                for (var li = 0; li < links.length; li++) links[li].remove();
               } catch {}
-              // Navigate back to blank
+              // 4. Kill onload and JS refresh functions on the new window
+              try { dfWin.document.body.removeAttribute('onload'); } catch {}
+              try {
+                var noopFn = function () {};
+                ['refresh', 'doLoad'].forEach(function (fn) {
+                  try { Object.defineProperty(dfWin, fn, { get: function () { return noopFn; }, set: function () {}, configurable: true }); }
+                  catch { try { dfWin[fn] = noopFn; } catch {} }
+                });
+              } catch {}
+              // 5. Navigate to blank to prevent any further activity from this page
               try { dfWin.location.replace('about:blank'); } catch {}
             } catch {}
           });
