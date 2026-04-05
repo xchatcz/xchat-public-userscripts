@@ -1919,29 +1919,42 @@
   var avatarCache = {};
   var avatarPending = {};
 
+  function getAvatarDirectUrl(nick) {
+    return 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
+  }
+
   function loadAvatarUrl(nick, callback) {
     var key = nick.toLowerCase();
     if (avatarCache[key]) { callback(avatarCache[key]); return; }
     if (avatarPending[key]) { avatarPending[key].push(callback); return; }
     avatarPending[key] = [callback];
-    GM_xmlhttpRequest({
-      method: 'GET',
-      url: 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick),
-      responseType: 'blob',
-      onload: function (resp) {
-        var url;
-        try { url = URL.createObjectURL(resp.response); } catch (e) { /* fallback below */ }
-        if (url) avatarCache[key] = url;
-        var cbs = avatarPending[key] || [];
-        delete avatarPending[key];
-        for (var i = 0; i < cbs.length; i++) cbs[i](url || '');
-      },
-      onerror: function () {
-        var cbs = avatarPending[key] || [];
-        delete avatarPending[key];
-        for (var i = 0; i < cbs.length; i++) cbs[i]('');
-      }
-    });
+    try {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: getAvatarDirectUrl(nick),
+        responseType: 'arraybuffer',
+        onload: function (resp) {
+          var url = '';
+          try {
+            var blob = new Blob([resp.response], { type: resp.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg' });
+            url = URL.createObjectURL(blob);
+          } catch (e) { /* fallback */ }
+          if (url) avatarCache[key] = url;
+          var cbs = avatarPending[key] || [];
+          delete avatarPending[key];
+          for (var i = 0; i < cbs.length; i++) cbs[i](url);
+        },
+        onerror: function () {
+          var cbs = avatarPending[key] || [];
+          delete avatarPending[key];
+          for (var i = 0; i < cbs.length; i++) cbs[i]('');
+        }
+      });
+    } catch (e) {
+      var cbs = avatarPending[key] || [];
+      delete avatarPending[key];
+      for (var i = 0; i < cbs.length; i++) cbs[i]('');
+    }
   }
 
   function updateUnreadBadge(key, count) {
@@ -2443,6 +2456,7 @@
 
     var avatarImg = document.createElement('img');
     avatarImg.className = 'xchat-fw-header-avatar';
+    avatarImg.src = getAvatarDirectUrl(nick);
     avatarImg.alt = nick;
     avatarLink.appendChild(avatarImg);
 
@@ -2574,10 +2588,11 @@
 
     var headImg = document.createElement('img');
     headImg.className = 'xchat-fw-head-img';
+    headImg.src = getAvatarDirectUrl(nick);
     headImg.alt = nick;
     head.appendChild(headImg);
 
-    // Load avatar once via cache, assign to both header and head images
+    // Load avatar via cache – on hit, replace src with blob URL to avoid future HTTP requests
     loadAvatarUrl(nick, function (url) {
       if (url) { avatarImg.src = url; headImg.src = url; }
     });
