@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.6.0
+// @version      1.6.1
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.6.0';
+  var SCRIPT_VERSION = '1.6.1';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2126,6 +2126,23 @@
           if (/pict_muz\.gif/i.test(finalUrl)) defaultType = 'male';
           else if (/pict_zena\.gif/i.test(finalUrl)) defaultType = 'female';
           else if (/unisex\.png/i.test(finalUrl)) defaultType = 'unisex';
+          // Fallback: detect default avatar from response data
+          if (!defaultType && resp.response) {
+            var bytes = new Uint8Array(resp.response);
+            var len = bytes.length;
+            // Default avatars are small (< 8KB) GIF or PNG files
+            // Real user photos are typically JPEG (FF D8 FF) and larger
+            if (len < 8192) {
+              var isGif = len > 3 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46; // GIF
+              var isPng = len > 3 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E; // PNG
+              if (isGif) {
+                var sex = getUserSex(nick);
+                defaultType = sex === 1 ? 'female' : sex === 0 ? 'male' : 'unisex';
+              } else if (isPng) {
+                defaultType = 'unisex';
+              }
+            }
+          }
           if (url) avatarCache[key] = url;
           avatarDefaultTypeCache[key] = defaultType;
           var cbs = avatarPending[key] || [];
@@ -2586,6 +2603,36 @@
     }, delayMs);
   }
 
+  function pollHeadOnlineStatus(key) {
+    var fwData = floatingWindows[key];
+    if (!fwData || !NETWORK.fwWonline.enabled) return;
+    var doOnePoll = function () {
+      if (!floatingWindows[key]) return;
+      enqueueXchatHtmlJob('fw-head-wonline:' + key, function () {
+        return fetchWonline(floatingWindows[key].origNick);
+      }).then(function (result) {
+        if (!floatingWindows[key]) return;
+        var hDot = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-status-dot') : null;
+        if (hDot) {
+          var isOnline = result.online && result.rooms.length > 0;
+          hDot.className = 'xchat-fw-head-status-dot ' + (isOnline ? 'xchat-fw-status-online' : 'xchat-fw-status-offline');
+          hDot.textContent = '\u25CF';
+        }
+      }).finally(function () {
+        if (floatingWindows[key] && TIMERS.fwOnlineStatusPoll.enabled) {
+          floatingWindows[key].headOnlinePollTimer = setTimeout(function () {
+            if (!floatingWindows[key]) return;
+            // If window was un-minimized and loadContent ran, the main poll handles it
+            if (floatingWindows[key].loaded) return;
+            doOnePoll();
+          }, TIMERS.fwOnlineStatusPoll.intervalMs);
+        }
+      });
+    };
+    // Initial fetch after short delay
+    fwData.headOnlinePollTimer = setTimeout(doOnePoll, 2000);
+  }
+
   function bootstrapWhisperUserIcons(key, framesetUrl) {
     var fwData = floatingWindows[key];
     if (!fwData) return;
@@ -2917,6 +2964,7 @@
       fwContactUpdate(key, { threadLastSeen: Date.now() });
     }
     if (startMinimized) bootstrapWhisperUserIcons(key, framesetUrl);
+    if (startMinimized) pollHeadOnlineStatus(key);
 
     // Restore unread badge from IDB contact data (for minimized windows after page reload)
     if (startMinimized) {
@@ -3494,10 +3542,6 @@
             floatingWindows[key].onlinePollTimer = setTimeout(function () {
               var current = floatingWindows[key];
               if (!current) return;
-              if (current.el.classList.contains('xchat-fw-minimized')) {
-                scheduleOnlinePoll(TIMERS.fwOnlineStatusPoll.intervalMs);
-                return;
-              }
               Promise.resolve(fetchAndUpdateRooms()).finally(function () {
                 scheduleOnlinePoll(TIMERS.fwOnlineStatusPoll.intervalMs);
               });
@@ -3646,6 +3690,9 @@
       }
       if (floatingWindows[key].userIconRefreshTimer) {
         clearTimeout(floatingWindows[key].userIconRefreshTimer);
+      }
+      if (floatingWindows[key].headOnlinePollTimer) {
+        clearTimeout(floatingWindows[key].headOnlinePollTimer);
       }
       if (floatingWindows[key].fetchMessagesTimeout) {
         clearTimeout(floatingWindows[key].fetchMessagesTimeout);
