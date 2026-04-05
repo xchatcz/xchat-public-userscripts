@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.4.6
+// @version      1.4.8
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.4.6';
+  var SCRIPT_VERSION = '1.4.8';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2902,6 +2902,17 @@
                 var tb = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
                 return ta - tb;
               });
+              // Deduplicate by display key (time+sender+text) — same message fetched
+              // on different days has different fingerprints but identical display key
+              var dedupHist = {};
+              relevant = relevant.filter(function (rec) {
+                var ts = rec.timestamp instanceof Date ? rec.timestamp : new Date(rec.timestamp);
+                var th = ('0' + ts.getHours()).slice(-2) + ':' + ('0' + ts.getMinutes()).slice(-2) + ':' + ('0' + ts.getSeconds()).slice(-2);
+                var dk = th + '|' + rec.sender + '|' + normalizeDedupText(rec.content_text);
+                if (dedupHist[dk]) return false;
+                dedupHist[dk] = true;
+                return true;
+              });
               allHistoryMsgs = relevant;
               historyTotal = relevant.length;
               var maxMsgs = getFwMaxMessages();
@@ -3042,7 +3053,7 @@
             return url;
           };
 
-          var fetchAndUpdateMessages = function () {
+          var fetchAndUpdateMessages = function (isInitialFetch) {
             if (!floatingWindows[key]) return; // window was closed
             if (!NETWORK.fwMessages.enabled) return Promise.resolve();
             if (floatingWindows[key].messageFetchInFlight) return Promise.resolve();
@@ -3141,6 +3152,72 @@
                 parsedMsgs.reverse();
 
                 var seenKeys = floatingWindows[key].seenMsgKeys;
+                var myNickForIdb = getSetting('myNick', '') || getMyNick() || '';
+                var otherNick = floatingWindows[key] ? floatingWindows[key].origNick : nick;
+
+                // Helper: build IDB record from a parsed server message
+                var buildIdbRec = function (m) {
+                  var isMine = m.cls === 'umsg_whwi' || m.cls === 'whisper_out';
+                  var sender = m.nick;
+                  var recipient = isMine ? otherNick : myNickForIdb;
+                  var msgType = isMine ? 'whisper_out' : 'whisper';
+                  var now = new Date();
+                  var tp = m.time.split(':');
+                  if (tp.length === 3) now.setHours(parseInt(tp[0], 10), parseInt(tp[1], 10), parseInt(tp[2], 10), 0);
+                  var textPlain = m.text.replace(/<[^>]+>/g, '').trim();
+                  var rec = {
+                    room_id: getRoomId(),
+                    timestamp: now,
+                    message_type: msgType,
+                    sender: sender,
+                    recipient: recipient,
+                    content_html: m.text,
+                    content_text: textPlain,
+                    is_whisper: true,
+                    color: m.color
+                  };
+                  rec.fingerprint = msgFingerprint(rec);
+                  return rec;
+                };
+
+                // ── Initial fetch: store ALL server messages to IDB, then rebuild display ──
+                if (isInitialFetch && isHistoryEnabled() && NETWORK.idbWrite.enabled && myNickForIdb) {
+                  var idbPromises = [];
+                  for (var mi = 0; mi < parsedMsgs.length; mi++) {
+                    idbPromises.push(dbAdd(buildIdbRec(parsedMsgs[mi])));
+                  }
+                  var serverKeys = parsedMsgs;
+                  return Promise.all(idbPromises).then(function (results) {
+                    if (!floatingWindows[key]) return;
+                    var newCount = 0;
+                    for (var ri = 0; ri < results.length; ri++) {
+                      if (results[ri] !== null) newCount++;
+                    }
+                    if (newCount > 0) {
+                      // New messages stored → rebuild display from IDB with correct order
+                      msgContainer.innerHTML = '';
+                      floatingWindows[key].seenMsgKeys = {};
+                      allHistoryMsgs = [];
+                      historyDisplayed = 0;
+                      if (loadMoreEl) { loadMoreEl.remove(); loadMoreEl = null; }
+                      return loadHistoryFromDB().then(function () {
+                        if (!floatingWindows[key]) return;
+                        // Add all server message keys to seenKeys so polls skip them
+                        var sk = floatingWindows[key].seenMsgKeys;
+                        for (var s = 0; s < serverKeys.length; s++) {
+                          sk[serverKeys[s].key] = true;
+                        }
+                      });
+                    } else {
+                      // No new messages — just populate seenKeys for poll dedup
+                      for (var s2 = 0; s2 < serverKeys.length; s2++) {
+                        seenKeys[serverKeys[s2].key] = true;
+                      }
+                    }
+                  });
+                }
+
+                // ── Subsequent polls: incremental update ──
                 var newestFirst = getFwNewestFirst();
                 var wasScrolled;
                 if (newestFirst) {
@@ -3149,50 +3226,23 @@
                   wasScrolled = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 30;
                 }
 
-                // Add only messages not already in DOM
                 var newMsgCount = 0;
-                var myNickForIdb = getSetting('myNick', '') || getMyNick() || '';
-                var otherNick = floatingWindows[key] ? floatingWindows[key].origNick : nick;
-                for (var mi = 0; mi < parsedMsgs.length; mi++) {
-                  var msg = parsedMsgs[mi];
+                for (var mi2 = 0; mi2 < parsedMsgs.length; mi2++) {
+                  var msg = parsedMsgs[mi2];
                   if (seenKeys[msg.key]) continue;
                   seenKeys[msg.key] = true;
                   newMsgCount++;
 
                   var msgEl = createMsgEl(msg);
                   if (newestFirst) {
-                    // Newest on top: prepend (newest = last in chronological = appended last → prepend each)
                     msgContainer.insertBefore(msgEl, msgContainer.firstChild);
                   } else {
-                    // Newest on bottom: append
                     msgContainer.appendChild(msgEl);
                   }
 
                   // Store fetched message into IndexedDB for future history
                   if (isHistoryEnabled() && NETWORK.idbWrite.enabled && myNickForIdb) {
-                    (function (m) {
-                      var isMine = m.cls === 'umsg_whwi' || m.cls === 'whisper_out';
-                      var sender = m.nick;
-                      var recipient = isMine ? otherNick : myNickForIdb;
-                      var msgType = isMine ? 'whisper_out' : 'whisper';
-                      var now = new Date();
-                      var tp = m.time.split(':');
-                      if (tp.length === 3) now.setHours(parseInt(tp[0], 10), parseInt(tp[1], 10), parseInt(tp[2], 10), 0);
-                      var textPlain = m.text.replace(/<[^>]+>/g, '').trim();
-                      var rec = {
-                        room_id: getRoomId(),
-                        timestamp: now,
-                        message_type: msgType,
-                        sender: sender,
-                        recipient: recipient,
-                        content_html: m.text,
-                        content_text: textPlain,
-                        is_whisper: true,
-                        color: m.color
-                      };
-                      rec.fingerprint = msgFingerprint(rec);
-                      dbAdd(rec).catch(function () {});
-                    })(msg);
+                    dbAdd(buildIdbRec(msg)).catch(function () {});
                   }
                 }
 
@@ -3338,8 +3388,8 @@
             }, delayMs);
           };
 
-          // Initial fetches
-          fetchAndUpdateMessages();
+          // Initial fetches (true = store all server messages to IDB, rebuild display)
+          fetchAndUpdateMessages(true);
           fetchAndUpdateRooms();
 
           // Periodický polling zpráv — přeskakuje minimalizovaná okna a neběží paralelně
@@ -5144,7 +5194,7 @@
       '  position: absolute;',
       '  bottom: -2px;',
       '  right: -2px;',
-      '  font-size: 10px;',
+      '  font-size: 18px;',
       '  line-height: 1;',
       '}',
       '.xchat-fw-header-avatar {',
