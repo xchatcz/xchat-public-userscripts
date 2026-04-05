@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.7.0
+// @version      1.7.1
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.0';
+  var SCRIPT_VERSION = '1.7.1';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -164,46 +164,56 @@
   var FW_USER_ICON_MINIMIZED_REFRESH_MS = 300000;
   var NATIVE_REFRESH_KILL_RETRY_MS = 500;
   var NATIVE_REFRESH_KILL_MAX_ATTEMPTS = 20;
-  var xchatHtmlJobQueue = [];
-  var xchatHtmlJobActive = false;
-  var xchatHtmlJobTimer = null;
-  var xchatHtmlNextAllowedAt = 0;
+
+  // ── Global job queue (shared across all script instances via window.top) ──
+  // Each @match frame gets its own script closure, but the queue MUST be
+  // single so that only one HTTP request to xchat.cz runs at any time.
+  var _q;
+  try {
+    if (!window.top._xchatJobQ) {
+      window.top._xchatJobQ = { queue: [], active: false, timer: null, nextAt: 0 };
+    }
+    _q = window.top._xchatJobQ;
+  } catch (e) {
+    // Cross-origin fallback (should not happen on xchat.cz)
+    _q = { queue: [], active: false, timer: null, nextAt: 0 };
+  }
 
   function pumpXchatHtmlJobQueue() {
-    if (xchatHtmlJobActive) return;
-    if (!xchatHtmlJobQueue.length) return;
-    if (xchatHtmlJobTimer) return;
+    if (_q.active) return;
+    if (!_q.queue.length) return;
+    if (_q.timer) return;
 
-    var waitMs = Math.max(0, xchatHtmlNextAllowedAt - Date.now());
+    var waitMs = Math.max(0, _q.nextAt - Date.now());
     if (waitMs > 0) {
-      xchatHtmlJobTimer = setTimeout(function () {
-        xchatHtmlJobTimer = null;
+      _q.timer = setTimeout(function () {
+        _q.timer = null;
         pumpXchatHtmlJobQueue();
       }, waitMs);
       return;
     }
 
-    var entry = xchatHtmlJobQueue.shift();
-    xchatHtmlJobActive = true;
+    var entry = _q.queue.shift();
+    _q.active = true;
     Promise.resolve()
       .then(entry.job)
       .then(entry.resolve, entry.reject)
       .finally(function () {
-        xchatHtmlJobActive = false;
-        xchatHtmlNextAllowedAt = Date.now() + XCHAT_HTML_JOB_GAP_MS;
+        _q.active = false;
+        _q.nextAt = Date.now() + XCHAT_HTML_JOB_GAP_MS;
         pumpXchatHtmlJobQueue();
       });
   }
 
   function enqueueXchatHtmlJob(key, job) {
     return new Promise(function (resolve, reject) {
-      for (var i = xchatHtmlJobQueue.length - 1; i >= 0; i--) {
-        if (xchatHtmlJobQueue[i].key === key) {
-          xchatHtmlJobQueue[i].resolve(null);
-          xchatHtmlJobQueue.splice(i, 1);
+      for (var i = _q.queue.length - 1; i >= 0; i--) {
+        if (_q.queue[i].key === key) {
+          _q.queue[i].resolve(null);
+          _q.queue.splice(i, 1);
         }
       }
-      xchatHtmlJobQueue.push({ key: key, job: job, resolve: resolve, reject: reject });
+      _q.queue.push({ key: key, job: job, resolve: resolve, reject: reject });
       pumpXchatHtmlJobQueue();
     });
   }
