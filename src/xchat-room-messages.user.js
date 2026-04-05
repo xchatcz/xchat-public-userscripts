@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.8
+// @version      1.4.0
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -151,7 +151,6 @@
   var ROOM_BOARD_MAX_KEYS = 250;
   var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
   var XCHAT_HTML_JOB_GAP_MS = 250;
-  var FW_USER_ICON_CACHE_KEY = '_xchat_fw_user_icons';
   var FW_USER_ICON_CACHE_TTL_MS = 60000;
   var FW_USER_ICON_OPEN_REFRESH_MS = 60000;
   var FW_USER_ICON_MINIMIZED_REFRESH_MS = 300000;
@@ -380,69 +379,40 @@
     return v;
   }
 
-  var FW_UNREAD_KEY = '_xchat_fw_unread';
-
-  function getFwUnread() {
-    try { return JSON.parse(localStorage.getItem(FW_UNREAD_KEY) || '{}'); } catch { return {}; }
-  }
-
   function setFwUnread(key, count) {
-    var data = getFwUnread();
-    if (count > 0) data[key] = count; else delete data[key];
-    try { localStorage.setItem(FW_UNREAD_KEY, JSON.stringify(data)); } catch {}
+    fwContactUpdate(key, { unreadCount: count > 0 ? count : 0 });
   }
 
   function clearFwUnread(key) {
-    setFwUnread(key, 0);
+    fwContactUpdate(key, { unreadCount: 0 });
   }
 
-  var FW_READ_KEYS_KEY = '_xchat_fw_read_keys';
-
   function getReadKeys(nickKey) {
-    try {
-      var data = JSON.parse(localStorage.getItem(FW_READ_KEYS_KEY) || '{}');
-      return data[nickKey] || {};
-    } catch { return {}; }
+    var c = fwContactGet(nickKey);
+    return (c && c.readKeys) ? c.readKeys : {};
   }
 
   function saveReadKeys(nickKey, keys) {
-    try {
-      var data = JSON.parse(localStorage.getItem(FW_READ_KEYS_KEY) || '{}');
-      var merged = data[nickKey] || {};
-      for (var k in keys) if (keys.hasOwnProperty(k)) merged[k] = 1;
-      var all = Object.keys(merged);
-      if (all.length > 500) {
-        var trimmed = {};
-        for (var i = all.length - 500; i < all.length; i++) trimmed[all[i]] = 1;
-        merged = trimmed;
-      }
-      data[nickKey] = merged;
-      localStorage.setItem(FW_READ_KEYS_KEY, JSON.stringify(data));
-    } catch {}
-  }
-
-  function getFwUserIconCache() {
-    try { return JSON.parse(localStorage.getItem(FW_USER_ICON_CACHE_KEY) || '{}'); } catch { return {}; }
-  }
-
-  function saveFwUserIconCache(cache) {
-    try { localStorage.setItem(FW_USER_ICON_CACHE_KEY, JSON.stringify(cache)); } catch {}
+    var c = fwContactGet(nickKey);
+    var merged = (c && c.readKeys) ? c.readKeys : {};
+    for (var k in keys) if (keys.hasOwnProperty(k)) merged[k] = 1;
+    var all = Object.keys(merged);
+    if (all.length > 500) {
+      var trimmed = {};
+      for (var i = all.length - 500; i < all.length; i++) trimmed[all[i]] = 1;
+      merged = trimmed;
+    }
+    fwContactUpdate(nickKey, { readKeys: merged });
   }
 
   function getCachedUserIconSources(key) {
-    var cache = getFwUserIconCache();
-    var entry = cache[key];
-    if (!entry || !Array.isArray(entry.sources)) return null;
-    return entry;
+    var c = fwContactGet(key);
+    if (!c || !Array.isArray(c.iconSources)) return null;
+    return { updatedAt: c.iconUpdatedAt, sources: c.iconSources };
   }
 
   function cacheUserIconSources(key, sources) {
-    var cache = getFwUserIconCache();
-    cache[key] = {
-      updatedAt: Date.now(),
-      sources: sources
-    };
-    saveFwUserIconCache(cache);
+    fwContactUpdate(key, { iconSources: sources, iconUpdatedAt: Date.now() });
   }
 
   function parseIdleToSeconds(idle) {
@@ -524,8 +494,9 @@
   // ── IndexedDB ──
 
   var DB_NAME = 'xchat_room_messages';
-  var DB_VERSION = 2;
+  var DB_VERSION = 3;
   var STORE_NAME = 'messages';
+  var FW_CONTACTS_STORE = 'fw_contacts';
 
   var _dbCache = null;
   var _dbPromise = null;
@@ -561,6 +532,11 @@
         }
         if (!store.indexNames.contains('fingerprint')) {
           store.createIndex('fingerprint', 'fingerprint', { unique: true });
+        }
+        // v3: fw_contacts store for floating whisper contact data
+        if (!db.objectStoreNames.contains(FW_CONTACTS_STORE)) {
+          var fwStore = db.createObjectStore(FW_CONTACTS_STORE, { keyPath: 'nick' });
+          fwStore.createIndex('updatedAt', 'updatedAt', { unique: false });
         }
       };
       req.onsuccess = function (e) {
@@ -665,6 +641,61 @@
         req.onerror = function () { reject(req.error); };
       });
     });
+  }
+
+  // ── fw_contacts in-memory cache backed by IDB ──
+
+  var _fwContactsCache = null; // Map<nick, contact> or null before init
+  var _fwContactsReady = null; // Promise that resolves when cache is loaded
+
+  function initFwContacts() {
+    _fwContactsReady = openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(FW_CONTACTS_STORE, 'readonly');
+        var store = tx.objectStore(FW_CONTACTS_STORE);
+        var req = store.getAll();
+        req.onsuccess = function () {
+          _fwContactsCache = new Map();
+          for (var i = 0; i < req.result.length; i++) {
+            _fwContactsCache.set(req.result[i].nick, req.result[i]);
+          }
+          resolve();
+        };
+        req.onerror = function () { _fwContactsCache = new Map(); resolve(); };
+      });
+    }).catch(function () { _fwContactsCache = new Map(); });
+    return _fwContactsReady;
+  }
+
+  function fwContactGet(key) {
+    if (!_fwContactsCache) return null;
+    return _fwContactsCache.get(key) || null;
+  }
+
+  function fwContactPut(contact) {
+    if (!_fwContactsCache) _fwContactsCache = new Map();
+    _fwContactsCache.set(contact.nick, contact);
+    openDB().then(function (db) {
+      var tx = db.transaction(FW_CONTACTS_STORE, 'readwrite');
+      tx.objectStore(FW_CONTACTS_STORE).put(contact);
+    }).catch(function () {});
+  }
+
+  function fwContactUpdate(key, fields) {
+    var contact = fwContactGet(key) || { nick: key };
+    for (var f in fields) {
+      if (fields.hasOwnProperty(f)) contact[f] = fields[f];
+    }
+    fwContactPut(contact);
+  }
+
+  function fwContactPutBatch(contacts) {
+    if (!contacts.length) return;
+    openDB().then(function (db) {
+      var tx = db.transaction(FW_CONTACTS_STORE, 'readwrite');
+      var store = tx.objectStore(FW_CONTACTS_STORE);
+      for (var i = 0; i < contacts.length; i++) store.put(contacts[i]);
+    }).catch(function () {});
   }
 
   function isHistoryEnabled() {
@@ -1999,7 +2030,6 @@
 
   var floatingWindows = {}; // keyed by normalized nick
   var _fwAutoOpenNoFocus = false; // temporary flag for auto-open without focus
-  var FW_STATE_KEY = '_xchat_fw_state';
 
   // ── Avatar image cache (blob URLs keyed by nick) ──
   var avatarCache = {};
@@ -2057,56 +2087,59 @@
       badge.classList.remove('xchat-fw-head-badge-visible');
     }
   }
-  var FW_HISTORY_KEY = '_xchat_fw_history';
   var FW_HISTORY_MAX = 1000;
 
   function getFloatingState() {
-    try { return JSON.parse(localStorage.getItem(FW_STATE_KEY) || '{}'); } catch { return {}; }
+    if (!_fwContactsCache) return {};
+    var state = {};
+    _fwContactsCache.forEach(function (c) {
+      if (c.windowOpen) {
+        state[c.nick] = { nick: c.origNick || c.nick, minimized: !!c.minimized };
+      }
+    });
+    return state;
   }
 
   function getWhisperHistory() {
-    try {
-      var data = JSON.parse(localStorage.getItem(FW_HISTORY_KEY) || '[]');
-      return Array.isArray(data) ? data : [];
-    } catch { return []; }
-  }
-
-  function saveWhisperHistory(list) {
-    // Keep only last FW_HISTORY_MAX entries
-    if (list.length > FW_HISTORY_MAX) list = list.slice(list.length - FW_HISTORY_MAX);
-    try { localStorage.setItem(FW_HISTORY_KEY, JSON.stringify(list)); } catch {}
+    if (!_fwContactsCache) return [];
+    var list = [];
+    _fwContactsCache.forEach(function (c) {
+      if (c.updatedAt) list.push({ key: c.nick, nick: c.origNick || c.nick, updated_at: c.updatedAt });
+    });
+    list.sort(function (a, b) { return b.updated_at - a.updated_at; });
+    if (list.length > FW_HISTORY_MAX) list = list.slice(0, FW_HISTORY_MAX);
+    return list;
   }
 
   function touchWhisperHistory(nick) {
-    var list = getWhisperHistory();
     var key = normNick(nick);
-    var now = Date.now();
-    var found = false;
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].key === key) {
-        list[i].nick = nick;
-        list[i].updated_at = now;
-        found = true;
-        break;
-      }
-    }
-    if (!found) list.push({ key: key, nick: nick, updated_at: now });
-    // Sort newest first
-    list.sort(function (a, b) { return b.updated_at - a.updated_at; });
-    saveWhisperHistory(list);
+    fwContactUpdate(key, { origNick: nick, updatedAt: Date.now() });
   }
 
   function saveFloatingState() {
-    var state = {};
+    var openKeys = {};
+    var toWrite = [];
     for (var k in floatingWindows) {
       if (floatingWindows.hasOwnProperty(k)) {
-        state[k] = {
-          nick: floatingWindows[k].origNick || k,
-          minimized: floatingWindows[k].el.classList.contains('xchat-fw-minimized')
-        };
+        openKeys[k] = true;
+        var c = fwContactGet(k) || { nick: k };
+        c.origNick = floatingWindows[k].origNick || k;
+        c.windowOpen = true;
+        c.minimized = floatingWindows[k].el.classList.contains('xchat-fw-minimized');
+        if (_fwContactsCache) _fwContactsCache.set(k, c);
+        toWrite.push(c);
       }
     }
-    try { localStorage.setItem(FW_STATE_KEY, JSON.stringify(state)); } catch {}
+    if (_fwContactsCache) {
+      _fwContactsCache.forEach(function (c) {
+        if (c.windowOpen && !openKeys[c.nick]) {
+          c.windowOpen = false;
+          c.minimized = false;
+          toWrite.push(c);
+        }
+      });
+    }
+    fwContactPutBatch(toWrite);
   }
 
   // Ensure all visible floating windows fit within the viewport.
@@ -2204,7 +2237,7 @@
   }
 
   function normNick(n) {
-    return n.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    return n.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
   }
 
   function getRoomName() {
@@ -2482,6 +2515,7 @@
       if (fwRef.head) fwRef.head.classList.remove('xchat-fw-head-visible');
       // Clear unread badge and persist read keys
       updateUnreadBadge(key, 0);
+      fwContactUpdate(key, { threadLastSeen: Date.now() });
       saveReadKeys(key, fwRef.seenMsgKeys);
       // Move to front of DOM = rightmost in row-reverse layout
       var container = getFloatingContainer();
@@ -2637,6 +2671,7 @@
       // Clear unread badge when un-minimizing and persist read keys
       if (wasMinimized) {
         updateUnreadBadge(key, 0);
+        fwContactUpdate(key, { threadLastSeen: Date.now() });
         if (floatingWindows[key]) saveReadKeys(key, floatingWindows[key].seenMsgKeys);
       }
       saveFloatingState();
@@ -2714,6 +2749,7 @@
       head.classList.remove('xchat-fw-head-visible');
       // Clear unread badge and persist read keys
       updateUnreadBadge(key, 0);
+      fwContactUpdate(key, { threadLastSeen: Date.now() });
       if (floatingWindows[key]) saveReadKeys(key, floatingWindows[key].seenMsgKeys);
       // Move to front of DOM = rightmost in row-reverse layout
       if (fw !== container.firstChild) container.insertBefore(fw, container.firstChild);
@@ -2750,13 +2786,27 @@
     for (var rk in savedReadKeys) if (savedReadKeys.hasOwnProperty(rk)) initialSeenKeys[rk] = true;
     floatingWindows[key] = { el: fw, head: head, headBadge: headBadge, roomEl: roomEl, avatarWrap: avatarWrap, origNick: nick, headTipIcons: headTipIcons, iconsEl: iconsSpan, seenMsgKeys: initialSeenKeys, unreadCount: 0, openedAt: Date.now(), loaded: false, messageFetchInFlight: false, fetchMessagesTimeout: null, onlinePollTimer: null, userIconRefreshTimer: null, framesetUrl: framesetUrl, roomtopUrl: '', textpageUrl: '', userpageUrl: '', frameUrlsPromise: null };
     saveFloatingState();
+    if (!startMinimized) {
+      fwContactUpdate(key, { threadLastSeen: Date.now() });
+    }
     if (startMinimized) bootstrapWhisperUserIcons(key, framesetUrl);
 
-    // Restore unread badge from localStorage (for minimized windows after page reload)
+    // Restore unread badge from IDB contact data (for minimized windows after page reload)
     if (startMinimized) {
-      var savedUnread = getFwUnread();
-      if (savedUnread[key] > 0) {
-        updateUnreadBadge(key, savedUnread[key]);
+      var savedContact = fwContactGet(key);
+      if (savedContact && savedContact.unreadCount > 0) {
+        updateUnreadBadge(key, savedContact.unreadCount);
+      } else if (savedContact && savedContact.threadLastSeen && isHistoryEnabled()) {
+        // Count whispers from this sender since threadLastSeen
+        dbQuery({ sender: nick, is_whisper: true, date_from: new Date(savedContact.threadLastSeen) })
+          .then(function (msgs) {
+            if (!floatingWindows[key] || !floatingWindows[key].el.classList.contains('xchat-fw-minimized')) return;
+            var count = 0;
+            for (var mi = 0; mi < msgs.length; mi++) {
+              if (!initialSeenKeys[msgs[mi].fingerprint]) count++;
+            }
+            if (count > 0) updateUnreadBadge(key, count);
+          }).catch(function () {});
       }
     }
 
@@ -3506,8 +3556,66 @@
       confirmBtn.className = 'xchat-fw-launcher-confirm';
       confirmBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 
+      // Autocomplete dropdown
+      var acDropdown = document.createElement('ul');
+      acDropdown.className = 'xchat-fw-launcher-ac';
+      var acIndex = -1;
+      var acItems = [];
+      var AC_MAX = 20;
+
+      function buildAcItems(query) {
+        acItems = [];
+        acDropdown.innerHTML = '';
+        acIndex = -1;
+        if (!query || !_fwContactsCache) { acDropdown.classList.remove('xchat-fw-launcher-ac-visible'); return; }
+        var q = query.toLowerCase();
+        var matches = [];
+        _fwContactsCache.forEach(function (c) {
+          var display = c.origNick || c.nick;
+          if (display.toLowerCase().indexOf(q) === 0) matches.push(display);
+        });
+        matches.sort(function (a, b) {
+          var aUp = (fwContactGet(normNick(a)) || {}).updatedAt || 0;
+          var bUp = (fwContactGet(normNick(b)) || {}).updatedAt || 0;
+          return bUp - aUp;
+        });
+        if (matches.length > AC_MAX) matches = matches.slice(0, AC_MAX);
+        if (!matches.length) { acDropdown.classList.remove('xchat-fw-launcher-ac-visible'); return; }
+        for (var mi = 0; mi < matches.length; mi++) {
+          var li = document.createElement('li');
+          li.className = 'xchat-fw-launcher-ac-item';
+          var matchPart = document.createElement('strong');
+          matchPart.textContent = matches[mi].substring(0, query.length);
+          li.appendChild(matchPart);
+          li.appendChild(document.createTextNode(matches[mi].substring(query.length)));
+          li.dataset.nick = matches[mi];
+          li.addEventListener('click', (function (n) {
+            return function () {
+              closeLauncherPopup();
+              openFloatingWhisper(n);
+            };
+          })(matches[mi]));
+          acDropdown.appendChild(li);
+          acItems.push(li);
+        }
+        acDropdown.classList.add('xchat-fw-launcher-ac-visible');
+      }
+
+      function acHighlight(idx) {
+        for (var ai = 0; ai < acItems.length; ai++) {
+          acItems[ai].classList.toggle('xchat-fw-launcher-ac-active', ai === idx);
+        }
+        acIndex = idx;
+        if (idx >= 0 && acItems[idx]) {
+          acItems[idx].scrollIntoView({ block: 'nearest' });
+        }
+      }
+
       function submitNick() {
         var val = input.value.trim();
+        if (acIndex >= 0 && acItems[acIndex]) {
+          val = acItems[acIndex].dataset.nick;
+        }
         if (!val) return;
         closeLauncherPopup();
         openFloatingWhisper(val);
@@ -3517,16 +3625,38 @@
         e.stopPropagation();
         submitNick();
       });
+      input.addEventListener('input', function () {
+        buildAcItems(input.value.trim());
+      });
       input.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (acItems.length) acHighlight(acIndex < acItems.length - 1 ? acIndex + 1 : 0);
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (acItems.length) acHighlight(acIndex > 0 ? acIndex - 1 : acItems.length - 1);
+        } else if (e.key === 'Tab') {
+          if (acItems.length) {
+            e.preventDefault();
+            var pick = acIndex >= 0 ? acIndex : 0;
+            input.value = acItems[pick].dataset.nick;
+            buildAcItems('');
+          }
+        } else if (e.key === 'Enter') {
           e.preventDefault();
           submitNick();
+        } else if (e.key === 'Escape') {
+          if (acItems.length) {
+            e.stopPropagation();
+            buildAcItems('');
+          }
         }
       });
 
       inputRow.appendChild(input);
       inputRow.appendChild(confirmBtn);
       body.appendChild(inputRow);
+      body.appendChild(acDropdown);
 
       // History list
       var historyUl = document.createElement('ul');
@@ -5265,6 +5395,37 @@
       '  background: #eef1f5;',
       '}',
 
+      // Autocomplete dropdown
+      '.xchat-fw-launcher-ac {',
+      '  list-style: none;',
+      '  margin: 0;',
+      '  padding: 0;',
+      '  max-height: 0;',
+      '  overflow-y: auto;',
+      '  background: #fff;',
+      '  border-top: 1px solid #eee;',
+      '  flex-shrink: 0;',
+      '  transition: max-height 0.15s ease;',
+      '}',
+      '.xchat-fw-launcher-ac-visible {',
+      '  max-height: 200px;',
+      '}',
+      '.xchat-fw-launcher-ac-item {',
+      '  padding: 4px 10px;',
+      '  font-size: 12px;',
+      '  cursor: pointer;',
+      '  white-space: nowrap;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '}',
+      '.xchat-fw-launcher-ac-item:hover,',
+      '.xchat-fw-launcher-ac-active {',
+      '  background: ' + skinColorLight + ';',
+      '}',
+      '.xchat-fw-launcher-ac-item strong {',
+      '  color: ' + skinColorAccent + ';',
+      '}',
+
     ].join('\n');
     // Persist as constructable stylesheet (created once, adopted into any new document)
     try {
@@ -5331,9 +5492,9 @@
         createLauncherBubble();
       }
 
-      // Restore previously open floating whisper windows (sequentially to avoid
-      // flooding the connection pool with 12× parallel fetch cascades)
-      if (getWhisperMode() === 'floating') {
+      // Load fw_contacts cache from IDB, then restore floating windows
+      initFwContacts().then(function () {
+        if (getWhisperMode() !== 'floating') return;
         var savedState = getFloatingState();
         var savedKeys = Object.keys(savedState);
         var fwIdx = 0;
@@ -5344,7 +5505,7 @@
           setTimeout(openNextFW, 300);
         }
         openNextFW();
-      }
+      });
     }
 
     const board = document.getElementById('board');
