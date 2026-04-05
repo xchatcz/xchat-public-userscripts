@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.6.9
+// @version      1.7.0
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.6.9';
+  var SCRIPT_VERSION = '1.7.0';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -481,7 +481,9 @@
     if (!nick) return;
     var rid = getRoomId();
     if (!rid || rid === 'unknown') return;
-    fetchWonline(nick).then(function (result) {
+    enqueueXchatHtmlJob('sync-idle', function () {
+      return fetchWonline(nick);
+    }).then(function (result) {
       if (!result.online || !result.rooms.length) return;
       for (var i = 0; i < result.rooms.length; i++) {
         if (String(result.rooms[i].rid) === String(rid)) {
@@ -2122,24 +2124,30 @@
     avatarPending[key] = [callback];
     var avatarUrl = getAvatarDirectUrl(nick);
 
-    function finish(defaultType) {
+    function finish(blobUrl, defaultType) {
       avatarDefaultTypeCache[key] = defaultType;
-      avatarCache[key] = avatarUrl;
+      avatarCache[key] = blobUrl || avatarUrl;
       var cbs = avatarPending[key] || [];
       delete avatarPending[key];
-      for (var i = 0; i < cbs.length; i++) cbs[i](avatarUrl, defaultType);
+      for (var i = 0; i < cbs.length; i++) cbs[i](avatarCache[key], defaultType);
     }
 
-    // Use native fetch (same-origin to www.xchat.cz) – browser follows 302 redirect,
-    // response.url contains the final URL (e.g. ximg.cz/x4/pict_muz.gif).
-    // This avoids GM_xmlhttpRequest which fails on cross-domain redirects.
-    // The actual image is loaded by <img src> independently.
-    fetch(avatarUrl)
+    // Use native fetch through the global queue (same-origin to www.xchat.cz) –
+    // browser follows 302 redirect, response.url contains the final URL.
+    // Convert to blob URL so img.src won't trigger another HTTP request.
+    enqueueXchatHtmlJob('avatar-detect:' + key, function () {
+      return fetch(avatarUrl, { credentials: 'include' });
+    })
       .then(function (resp) {
-        finish(detectDefaultAvatar(resp.url || ''));
+        var defaultType = detectDefaultAvatar(resp ? (resp.url || '') : '');
+        if (!resp || !resp.ok) { finish(null, defaultType); return; }
+        return resp.blob().then(function (blob) {
+          var blobUrl = URL.createObjectURL(blob);
+          finish(blobUrl, defaultType);
+        });
       })
       .catch(function () {
-        finish(null);
+        finish(null, null);
       });
   }
 
@@ -2535,16 +2543,8 @@
             delete avatarCache[ak];
             delete avatarPending[ak];
             delete avatarDefaultTypeCache[ak];
-            // Reload avatar with correct sex param
-            var newUrl = getAvatarDirectUrl(origNick);
+            // Reload avatar with correct sex param (through queue, blob URL)
             if (floatingWindows[key]) {
-              var aw = floatingWindows[key].avatarWrap;
-              if (aw) {
-                var aImg = aw.querySelector('.xchat-fw-header-avatar');
-                if (aImg) aImg.src = newUrl;
-              }
-              var hImg = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-img') : null;
-              if (hImg) hImg.src = newUrl;
               loadAvatarUrl(origNick, function (url, defaultType) {
                 if (!url || !floatingWindows[key]) return;
                 var ai = floatingWindows[key].avatarWrap ? floatingWindows[key].avatarWrap.querySelector('.xchat-fw-header-avatar') : null;
@@ -2711,7 +2711,6 @@
 
     var avatarImg = document.createElement('img');
     avatarImg.className = 'xchat-fw-header-avatar';
-    avatarImg.src = getAvatarDirectUrl(nick);
     avatarImg.alt = nick;
     avatarLink.appendChild(avatarImg);
 
@@ -2852,7 +2851,6 @@
 
     var headImg = document.createElement('img');
     headImg.className = 'xchat-fw-head-img';
-    headImg.src = getAvatarDirectUrl(nick);
     headImg.alt = nick;
     head.appendChild(headImg);
 
