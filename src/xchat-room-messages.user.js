@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.4.5
+// @version      1.4.6
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.4.5';
+  var SCRIPT_VERSION = '1.4.6';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -3151,6 +3151,8 @@
 
                 // Add only messages not already in DOM
                 var newMsgCount = 0;
+                var myNickForIdb = getSetting('myNick', '') || getMyNick() || '';
+                var otherNick = floatingWindows[key] ? floatingWindows[key].origNick : nick;
                 for (var mi = 0; mi < parsedMsgs.length; mi++) {
                   var msg = parsedMsgs[mi];
                   if (seenKeys[msg.key]) continue;
@@ -3164,6 +3166,33 @@
                   } else {
                     // Newest on bottom: append
                     msgContainer.appendChild(msgEl);
+                  }
+
+                  // Store fetched message into IndexedDB for future history
+                  if (isHistoryEnabled() && NETWORK.idbWrite.enabled && myNickForIdb) {
+                    (function (m) {
+                      var isMine = m.cls === 'umsg_whwi' || m.cls === 'whisper_out';
+                      var sender = m.nick;
+                      var recipient = isMine ? otherNick : myNickForIdb;
+                      var msgType = isMine ? 'whisper_out' : 'whisper';
+                      var now = new Date();
+                      var tp = m.time.split(':');
+                      if (tp.length === 3) now.setHours(parseInt(tp[0], 10), parseInt(tp[1], 10), parseInt(tp[2], 10), 0);
+                      var textPlain = m.text.replace(/<[^>]+>/g, '').trim();
+                      var rec = {
+                        room_id: getRoomId(),
+                        timestamp: now,
+                        message_type: msgType,
+                        sender: sender,
+                        recipient: recipient,
+                        content_html: m.text,
+                        content_text: textPlain,
+                        is_whisper: true,
+                        color: m.color
+                      };
+                      rec.fingerprint = msgFingerprint(rec);
+                      dbAdd(rec).catch(function () {});
+                    })(msg);
                   }
                 }
 
