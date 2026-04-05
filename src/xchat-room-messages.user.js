@@ -448,6 +448,15 @@
     return parseInt(parts[0], 10) || 0;
   }
 
+  function formatIdleTime(totalSeconds) {
+    var h = Math.floor(totalSeconds / 3600);
+    var m = Math.floor((totalSeconds % 3600) / 60);
+    var s = totalSeconds % 60;
+    var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+    if (h > 0) return pad(h) + ':' + pad(m) + ':' + pad(s);
+    return pad(m) + ':' + pad(s);
+  }
+
   function setCustomGreeting(nick, text) {
     var data = getGreetings();
     if (text) data[nick] = text;
@@ -787,10 +796,26 @@
     for (var i = 0; i < divs.length; i++) captureDiv(divs[i]);
   }
 
+  function resetIdleTimer() {
+    try {
+      window.top._xchatIdleBaseSec = 0;
+      window.top._xchatIdleBaseTime = Date.now();
+      var span = window.top._xchatIdleSpan;
+      if (span) span.textContent = '00:00';
+    } catch {}
+  }
+
+  function checkOutgoingAndResetIdle(div) {
+    if (div.querySelector('.umsg_roomi, .umsg_whisperi, .umsg_wcrossi, .umsg_whwi')) {
+      resetIdleTimer();
+    }
+  }
+
   function processBoardDiv(div) {
     syncMainBoardRecentKey(div);
     captureDiv(div);
     rememberOutgoingNickFromDiv(div);
+    checkOutgoingAndResetIdle(div);
     processEntryDiv(div);
     markBadCommandDiv(div);
     markKickHighlightDiv(div);
@@ -1340,6 +1365,7 @@
   function sendMessage(text) {
     const origForm = findOriginalForm();
     if (!origForm) return;
+    resetIdleTimer();
 
     // Create a hidden iframe as the submission target,
     // so the original form and its input are never touched.
@@ -3218,6 +3244,7 @@
           var fwData = floatingWindows[key];
           if (!fwData || !fwData.formAction) return;
           fwInput.value = '';
+          resetIdleTimer();
           // Submit via hidden iframe (preserves ISO-8859-2 encoding)
           var iframeName = 'xchat-fw-submit-' + Date.now();
           var hIframe = document.createElement('iframe');
@@ -3548,12 +3575,54 @@
       }
     }
 
-    // Rename "Nemluvil jsi:" to "IDLE:"
+    // Rename "Nemluvil jsi:" to "IDLE:" and make the timer live
     var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
     var node;
     while ((node = walker.nextNode())) {
       if (node.textContent.indexOf('Nemluvil jsi:') !== -1) {
-        node.textContent = node.textContent.replace('Nemluvil jsi:', 'IDLE:');
+        // Expected text: "... Nemluvil jsi: MM:SS ..." or "... Nemluvil jsi: HH:MM:SS ..."
+        var idleMatch = node.textContent.match(/Nemluvil jsi:\s*((\d{1,2}:)?\d{1,2}:\d{2})/);
+        if (idleMatch) {
+          var idleTimeStr = idleMatch[1];
+          var beforeText = node.textContent.substring(0, idleMatch.index);
+          var afterText = node.textContent.substring(idleMatch.index + idleMatch[0].length);
+          var parent = node.parentNode;
+
+          // Replace text node with: "... IDLE: " + <span id="xchat-idle-timer">MM:SS</span> + rest
+          var beforeNode = document.createTextNode(beforeText + 'IDLE: ');
+          var idleSpan = document.createElement('span');
+          idleSpan.id = 'xchat-idle-timer';
+          idleSpan.textContent = idleTimeStr;
+          var afterNode = document.createTextNode(afterText);
+
+          parent.insertBefore(beforeNode, node);
+          parent.insertBefore(idleSpan, node);
+          parent.insertBefore(afterNode, node);
+          parent.removeChild(node);
+
+          // Initialize live idle timer
+          var idleBaseSec = parseIdleToSeconds(idleTimeStr);
+          var idleBaseTime = Date.now();
+          try {
+            window.top._xchatIdleBaseSec = idleBaseSec;
+            window.top._xchatIdleBaseTime = idleBaseTime;
+            window.top._xchatIdleSpan = idleSpan;
+          } catch {}
+
+          setInterval(function () {
+            var baseSec, baseTime;
+            try {
+              baseSec = window.top._xchatIdleBaseSec;
+              baseTime = window.top._xchatIdleBaseTime;
+            } catch { return; }
+            if (baseSec == null || !baseTime) return;
+            var elapsed = baseSec + Math.floor((Date.now() - baseTime) / 1000);
+            idleSpan.textContent = formatIdleTime(elapsed);
+          }, 1000);
+        } else {
+          node.textContent = node.textContent.replace('Nemluvil jsi:', 'IDLE:');
+        }
+        break;
       }
     }
 
