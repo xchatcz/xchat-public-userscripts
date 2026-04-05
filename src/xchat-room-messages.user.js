@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.2.4
+// @version      1.3.0
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -25,6 +25,44 @@
       // 'nick': 'vlastní pozdrav'
     }
   };
+
+  // ── Skin / paleta barev ──
+  var SKIN = (function () {
+    try {
+      var s = new URLSearchParams(location.search).get('skin');
+      if (s) return parseInt(s, 10) || 2;
+      s = new URLSearchParams(window.top.location.search).get('skin');
+      if (s) return parseInt(s, 10) || 2;
+    } catch {}
+    return 2;
+  })();
+
+  var SKIN_PALETTES = {
+    2:  ['#6E7F98', '#C1C9D3', '#8291A5', '#E7E7E8', '#1B366B', '#3354DA', '#CCCCCD'],
+    3:  ['#E1391B', '#EFB6B4', '#E2391B', '#EFB6B4', '#1B366B', '#3354DA', '#CCCCCD'],
+    4:  ['#648330', '#E8F6CE', '#648330', '#E8F6CE', '#1B366B', '#3354DA', '#CCCCCD'],
+    5:  ['#517BE2', '#C8E7FF', '#517BE2', '#C8E7FF', '#1B366B', '#3354DA', '#CCCCCD'],
+    6:  ['#EA9328', '#F3CC8E', '#EA9328', '#F3CC8E', '#1B366B', '#3354DA', '#CCCCCD'],
+    7:  ['#AF4031', '#EAC555', '#AF4031', '#EAC555', '#CA8335', '#AF4031', '#EAEBED'],
+    8:  ['#E9974B', '#F3F4F5', '#E88E3F', '#FEFFFF', '#CCCCCD', '#3354DA', '#E0E1E3'],
+    9:  ['#EA984E', '#333333', '#E88E3F', '#292929', '#666667', '#E67222', '#E0E1E3'],
+    10: ['#B04132', '#EAC555', '#B04132', '#EAC555', '#E7E7E8', '#3354DA', '#CCCCCD'],
+    11: ['#575657', '#090909', '#4D4D4E', '#101010', '#000000', '#71BD4F', '#71BD4F'],
+    12: ['#F3E585', '#1D1D1D', '#F2C94B', '#121212', '#E3D554', '#E3D554', '#2C2C2C'],
+    13: ['#CBDAE9', '#FEFFFF', '#AFC6DC', '#FEFFFF', '#FDFEFF', '#2C5581', '#98BCDC'],
+    14: ['#4D4D4E', '#111111', '#3F3F3F', '#0D0D0D', '#E67222', '#E67222', '#595859'],
+    15: ['#4D4D4E', '#111111', '#3F3F3F', '#0D0D0D', '#E67222', '#E67222', '#F2E7CE'],
+    16: ['#E4EFF0', '#202020', '#C5DCDE', '#121212', '#79A18D', '#79A18D', '#396B6D']
+  };
+
+  var skinPalette        = SKIN_PALETTES[SKIN] || SKIN_PALETTES[2];
+  var skinColorPrimary   = skinPalette[0]; // tmavší akcent / hover (skin 2: #6E7F98)
+  var skinColorSecondary = skinPalette[1]; // sekundární světlá (skin 2: #C1C9D3)
+  var skinColorAccent    = skinPalette[2]; // hlavní akcent – header, tlačítka (skin 2: #8291A5)
+  var skinColorLight     = skinPalette[3]; // footer / input pozadí (skin 2: #E7E7E8)
+  var skinColorDark      = skinPalette[4]; // tmavá barva (skin 2: #1B366B)
+  var skinColorLink      = skinPalette[5]; // barva odkazů (skin 2: #3354DA)
+  var skinColorBg        = skinPalette[6]; // pozadí místnosti / šeptů (skin 2: #CCCCCD)
 
   const ENTRY_RE = /(?:Uživatel(?:ka)?)\s+(\S+)\s+vstoupil[a]?\s+do\s+místnosti/;
   const SETTINGS_KEY = '_xchat_room_message_settings';
@@ -4509,7 +4547,7 @@
       '}',
 
       '.xchat-fw-header {',
-      '  background: #8291A5;',
+      '  background: ' + skinColorAccent + ';',
       '  color: #fff;',
       '  padding: 6px 8px;',
       '  position: relative;',
@@ -4642,7 +4680,7 @@
       '  opacity: 0.8;',
       '}',
       '.xchat-fw-header-btn:hover {',
-      '  background: #6E7F98;',
+      '  background: ' + skinColorPrimary + ';',
       '  opacity: 1;',
       '}',
       '.xchat-fw-body {',
@@ -4652,10 +4690,10 @@
       '  line-height: 1.4;',
       '  word-wrap: break-word;',
       '  padding: 4px;',
-      '  background: #CCCCCD;',
+      '  background: ' + skinColorBg + ';',
       '}',
       '.xchat-fw-footer {',
-      '  background: #E6E7E8;',
+      '  background: ' + skinColorLight + ';',
       '  flex-shrink: 0;',
       '  border-top: 1px solid #ccc;',
       '  display: flex;',
@@ -4673,10 +4711,10 @@
       '  min-width: 0;',
       '}',
       '.xchat-fw-input:focus {',
-      '  border-color: #8291A5;',
+      '  border-color: ' + skinColorAccent + ';',
       '}',
       '.xchat-fw-send {',
-      '  background: #8291A5;',
+      '  background: ' + skinColorAccent + ';',
       '  color: #fff;',
       '  border: none;',
       '  border-radius: 50%;',
@@ -4690,7 +4728,7 @@
       '  padding: 0;',
       '}',
       '.xchat-fw-send:hover {',
-      '  background: #6b7d96;',
+      '  background: ' + skinColorPrimary + ';',
       '}',
       '.xchat-fw-body .splash {',
       '  text-align: center;',
@@ -4725,7 +4763,7 @@
 
       // Pošeptat launcher bubble + window
       '.xchat-fw-launcher-head {',
-      '  background: #8291A5;',
+      '  background: ' + skinColorAccent + ';',
       '  display: flex;',
       '  align-items: center;',
       '  justify-content: center;',
@@ -4747,7 +4785,7 @@
       '  align-items: center;',
       '  padding: 6px;',
       '  gap: 4px;',
-      '  background: #E6E7E8;',
+      '  background: ' + skinColorLight + ';',
       '  border-bottom: 1px solid #eee;',
       '  flex-shrink: 0;',
       '}',
@@ -4761,10 +4799,10 @@
       '  min-width: 0;',
       '}',
       '.xchat-fw-launcher-input:focus {',
-      '  border-color: #8291A5;',
+      '  border-color: ' + skinColorAccent + ';',
       '}',
       '.xchat-fw-launcher-confirm {',
-      '  background: #8291A5;',
+      '  background: ' + skinColorAccent + ';',
       '  border: none;',
       '  border-radius: 50%;',
       '  width: 24px;',
@@ -4777,7 +4815,7 @@
       '  padding: 0;',
       '}',
       '.xchat-fw-launcher-confirm:hover {',
-      '  background: #6b7d96;',
+      '  background: ' + skinColorPrimary + ';',
       '}',
       '.xchat-fw-launcher-list {',
       '  list-style: none;',
