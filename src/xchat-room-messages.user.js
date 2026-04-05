@@ -5,8 +5,9 @@
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
+// @match        https://www.xchat.cz/*/modchat?op=titlepage*
 // @match        https://www.xchat.cz/*/history.html*
-// @run-at       document-end
+// @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @connect      scripts.xchat.cz
 // ==/UserScript==
