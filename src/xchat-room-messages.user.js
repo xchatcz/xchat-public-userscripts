@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.5.1
+// @version      1.6.0
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.5.1';
+  var SCRIPT_VERSION = '1.6.0';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2048,6 +2048,7 @@
   // ── Avatar image cache (blob URLs keyed by nick) ──
   var avatarCache = {};
   var avatarPending = {};
+  var avatarDefaultTypeCache = {};
 
   // ── User sex cache: -1 = unknown, 0 = male, 1 = female ──
   var userSexCache = {};
@@ -2083,13 +2084,30 @@
     return -1;
   }
 
+  function getAvatarInitials(nick) {
+    var idx = nick.search(/[._\-]/);
+    if (idx > 0 && idx < nick.length - 1) {
+      return (nick[0] + nick[idx + 1]).toUpperCase();
+    }
+    return nick.substring(0, Math.min(2, nick.length)).toUpperCase();
+  }
+
+  function applyInitialsOverlay(el, defaultType, nick) {
+    if (!el) return;
+    el.classList.remove('xchat-fw-initials-male', 'xchat-fw-initials-female', 'xchat-fw-initials-unisex', 'xchat-fw-initials-visible');
+    if (defaultType) {
+      el.textContent = getAvatarInitials(nick);
+      el.classList.add('xchat-fw-initials-' + defaultType, 'xchat-fw-initials-visible');
+    }
+  }
+
   function getAvatarDirectUrl(nick) {
     return 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick) + '&sex=' + getUserSex(nick);
   }
 
   function loadAvatarUrl(nick, callback) {
     var key = nick.toLowerCase();
-    if (avatarCache[key]) { callback(avatarCache[key]); return; }
+    if (avatarCache[key]) { callback(avatarCache[key], avatarDefaultTypeCache[key] || null); return; }
     if (avatarPending[key]) { avatarPending[key].push(callback); return; }
     avatarPending[key] = [callback];
     try {
@@ -2103,10 +2121,16 @@
             var blob = new Blob([resp.response], { type: resp.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg' });
             url = URL.createObjectURL(blob);
           } catch (e) { /* fallback */ }
+          var defaultType = null;
+          var finalUrl = resp.finalUrl || '';
+          if (/pict_muz\.gif/i.test(finalUrl)) defaultType = 'male';
+          else if (/pict_zena\.gif/i.test(finalUrl)) defaultType = 'female';
+          else if (/unisex\.png/i.test(finalUrl)) defaultType = 'unisex';
           if (url) avatarCache[key] = url;
+          avatarDefaultTypeCache[key] = defaultType;
           var cbs = avatarPending[key] || [];
           delete avatarPending[key];
-          for (var i = 0; i < cbs.length; i++) cbs[i](url);
+          for (var i = 0; i < cbs.length; i++) cbs[i](url, defaultType);
         },
         onerror: function () {
           var cbs = avatarPending[key] || [];
@@ -2512,6 +2536,7 @@
             var ak = origNick.toLowerCase();
             delete avatarCache[ak];
             delete avatarPending[ak];
+            delete avatarDefaultTypeCache[ak];
             // Reload avatar with correct sex param
             var newUrl = getAvatarDirectUrl(origNick);
             if (floatingWindows[key]) {
@@ -2522,12 +2547,16 @@
               }
               var hImg = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-img') : null;
               if (hImg) hImg.src = newUrl;
-              loadAvatarUrl(origNick, function (url) {
+              loadAvatarUrl(origNick, function (url, defaultType) {
                 if (!url || !floatingWindows[key]) return;
                 var ai = floatingWindows[key].avatarWrap ? floatingWindows[key].avatarWrap.querySelector('.xchat-fw-header-avatar') : null;
                 var hi = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-img') : null;
                 if (ai) ai.src = url;
                 if (hi) hi.src = url;
+                var avatarOv = floatingWindows[key].avatarWrap ? floatingWindows[key].avatarWrap.querySelector('.xchat-fw-avatar-initials') : null;
+                var headOv = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-initials') : null;
+                applyInitialsOverlay(avatarOv, defaultType, origNick);
+                applyInitialsOverlay(headOv, defaultType, origNick);
               });
             }
           }
@@ -2669,6 +2698,12 @@
     });
 
     avatarWrap.appendChild(avatarLink);
+
+    var avatarInitials = document.createElement('span');
+    avatarInitials.className = 'xchat-fw-avatar-initials';
+    avatarInitials.textContent = getAvatarInitials(nick);
+    avatarWrap.appendChild(avatarInitials);
+
     info.appendChild(avatarWrap);
 
     var infoTexts = document.createElement('div');
@@ -2794,9 +2829,16 @@
     headImg.alt = nick;
     head.appendChild(headImg);
 
+    var headInitials = document.createElement('span');
+    headInitials.className = 'xchat-fw-head-initials';
+    headInitials.textContent = getAvatarInitials(nick);
+    head.appendChild(headInitials);
+
     // Load avatar via cache – on hit, replace src with blob URL to avoid future HTTP requests
-    loadAvatarUrl(nick, function (url) {
+    loadAvatarUrl(nick, function (url, defaultType) {
       if (url) { avatarImg.src = url; headImg.src = url; }
+      applyInitialsOverlay(avatarInitials, defaultType, nick);
+      applyInitialsOverlay(headInitials, defaultType, nick);
     });
 
     // Close button on head
@@ -2809,10 +2851,14 @@
     });
     head.appendChild(headClose);
 
-    // Unread badge (shown at bottom-right)
+    // Unread badge (shown at bottom-left)
     var headBadge = document.createElement('span');
     headBadge.className = 'xchat-fw-head-badge';
     head.appendChild(headBadge);
+
+    var headStatusDot = document.createElement('span');
+    headStatusDot.className = 'xchat-fw-head-status-dot';
+    head.appendChild(headStatusDot);
 
     // Tooltip (shown on hover, to the left)
     var headTip = document.createElement('div');
@@ -3380,6 +3426,9 @@
                   dot.textContent = '\u25CF';
                   aw.appendChild(dot);
                 }
+                // Mirror status dot on minimized head
+                var hDot = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-status-dot') : null;
+                if (hDot) { hDot.className = 'xchat-fw-head-status-dot xchat-fw-status-online'; hDot.textContent = '\u25CF'; }
                 // Build room text as a single string for word-safe truncation
                 var parts = [];
                 for (var ri = 0; ri < sortedRooms.length; ri++) {
@@ -3428,6 +3477,9 @@
                   dot.textContent = '\u25CF';
                   aw.appendChild(dot);
                 }
+                // Mirror status dot on minimized head
+                var hDotOff = floatingWindows[key].head ? floatingWindows[key].head.querySelector('.xchat-fw-head-status-dot') : null;
+                if (hDotOff) { hDotOff.className = 'xchat-fw-head-status-dot xchat-fw-status-offline'; hDotOff.textContent = '\u25CF'; }
                 var offlineText = document.createElement('span');
                 offlineText.className = 'xchat-fw-status-offline-text';
                 offlineText.textContent = 'offline';
@@ -5172,7 +5224,7 @@
       '.xchat-fw-head-badge {',
       '  position: absolute;',
       '  bottom: -4px;',
-      '  right: -4px;',
+      '  left: -4px;',
       '  min-width: 16px;',
       '  height: 16px;',
       '  line-height: 16px;',
@@ -5353,6 +5405,67 @@
       '.xchat-fw-status-offline-text {',
       '  color: #FF0000;',
       '  font-size: 10px;',
+      '}',
+      '.xchat-fw-avatar-initials {',
+      '  position: absolute;',
+      '  top: 0;',
+      '  left: 0;',
+      '  width: 28px;',
+      '  height: 28px;',
+      '  display: none;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  font-size: 13px;',
+      '  font-weight: bold;',
+      '  font-family: arial, sans-serif;',
+      '  border-radius: 50%;',
+      '  color: #fff;',
+      '  pointer-events: none;',
+      '  z-index: 1;',
+      '  text-shadow: 0 1px 3px rgba(0,0,0,0.5);',
+      '}',
+      '.xchat-fw-head-initials {',
+      '  position: absolute;',
+      '  top: 0;',
+      '  left: 0;',
+      '  width: 100%;',
+      '  height: 100%;',
+      '  display: none;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  font-size: 17px;',
+      '  font-weight: bold;',
+      '  font-family: arial, sans-serif;',
+      '  border-radius: 50%;',
+      '  color: #fff;',
+      '  pointer-events: none;',
+      '  z-index: 1;',
+      '  text-shadow: 0 1px 3px rgba(0,0,0,0.5);',
+      '}',
+      '.xchat-fw-initials-visible {',
+      '  display: flex;',
+      '}',
+      '.xchat-fw-initials-male {',
+      '  background: rgba(47, 73, 216, 0.65);',
+      '}',
+      '.xchat-fw-initials-female {',
+      '  background: rgba(204, 51, 23, 0.65);',
+      '}',
+      '.xchat-fw-initials-unisex {',
+      '  background: rgba(128, 128, 128, 0.65);',
+      '}',
+      '.xchat-fw-head-status-dot {',
+      '  position: absolute;',
+      '  bottom: -2px;',
+      '  right: -2px;',
+      '  font-size: 14px;',
+      '  line-height: 1;',
+      '  z-index: 2;',
+      '  display: none;',
+      '}',
+      '.xchat-fw-head-status-dot.xchat-fw-status-online,',
+      '.xchat-fw-head-status-dot.xchat-fw-status-offline {',
+      '  display: block;',
       '}',
       '.xchat-fw-room-links {',
       '  color: #fff;',
