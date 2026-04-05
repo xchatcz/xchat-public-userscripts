@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.6.3
+// @version      1.6.6
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.6.3';
+  var SCRIPT_VERSION = '1.6.6';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2105,71 +2105,79 @@
     return 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick) + '&sex=' + getUserSex(nick);
   }
 
+  function detectDefaultAvatar(url) {
+    if (/pict_muz\.gif/i.test(url)) return 'male';
+    if (/pict_zena\.gif/i.test(url)) return 'female';
+    if (/unisex\.png/i.test(url)) return 'unisex';
+    return null;
+  }
+
   function loadAvatarUrl(nick, callback) {
     var key = nick.toLowerCase();
     if (avatarCache[key]) {
-      var dt = avatarDefaultTypeCache[key];
-      if (!dt) {
-        var s = getUserSex(nick);
-        dt = s === 1 ? 'female' : s === 0 ? 'male' : 'unisex';
-      }
-      callback(avatarCache[key], dt);
+      callback(avatarCache[key], avatarDefaultTypeCache[key] || null);
       return;
     }
     if (avatarPending[key]) { avatarPending[key].push(callback); return; }
     avatarPending[key] = [callback];
+    var avatarUrl = getAvatarDirectUrl(nick);
+
+    function finish(blobUrl, defaultType) {
+      if (blobUrl) avatarCache[key] = blobUrl;
+      avatarDefaultTypeCache[key] = defaultType;
+      var cbs = avatarPending[key] || [];
+      delete avatarPending[key];
+      for (var i = 0; i < cbs.length; i++) cbs[i](blobUrl || '', defaultType);
+    }
+
+    function loadImageBlob(imgUrl, defaultType) {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: imgUrl,
+        responseType: 'arraybuffer',
+        onload: function (resp) {
+          var blobUrl = '';
+          try {
+            var ct = resp.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg';
+            blobUrl = URL.createObjectURL(new Blob([resp.response], { type: ct }));
+          } catch (e) { /* ignore */ }
+          finish(blobUrl, defaultType);
+        },
+        onerror: function () { finish('', defaultType); }
+      });
+    }
+
     try {
       GM_xmlhttpRequest({
         method: 'GET',
-        url: getAvatarDirectUrl(nick),
+        url: avatarUrl,
         responseType: 'arraybuffer',
         onload: function (resp) {
-          var url = '';
-          try {
-            var blob = new Blob([resp.response], { type: resp.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg' });
-            url = URL.createObjectURL(blob);
-          } catch (e) { /* fallback */ }
-          var defaultType = null;
-          var finalUrl = resp.finalUrl || '';
-          if (/pict_muz\.gif/i.test(finalUrl)) defaultType = 'male';
-          else if (/pict_zena\.gif/i.test(finalUrl)) defaultType = 'female';
-          else if (/unisex\.png/i.test(finalUrl)) defaultType = 'unisex';
-          // Fallback: detect from response format (GIF/PNG = default, JPEG = custom photo)
-          if (!defaultType && resp.response) {
-            var bytes = new Uint8Array(resp.response);
-            var isGif = bytes.length > 3 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46;
-            var isPng = bytes.length > 3 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E;
-            if (isGif || isPng) {
-              var sex = getUserSex(nick);
-              defaultType = sex === 1 ? 'female' : sex === 0 ? 'male' : 'unisex';
+          // Case 1: GM did NOT follow redirect – we got the 302 response directly
+          if (resp.status >= 300 && resp.status < 400) {
+            var loc = (resp.responseHeaders || '').match(/^location:\s*(.+)$/mi);
+            var locationUrl = loc ? loc[1].trim() : '';
+            var defaultType = detectDefaultAvatar(locationUrl);
+            if (locationUrl) {
+              // Load actual image from the redirect target
+              loadImageBlob(locationUrl, defaultType);
+            } else {
+              finish('', null);
             }
+            return;
           }
-          // Final fallback: if still unknown, use sex to show initials anyway
-          if (!defaultType) {
-            var sexFb = getUserSex(nick);
-            defaultType = sexFb === 1 ? 'female' : sexFb === 0 ? 'male' : 'unisex';
-          }
-          if (url) avatarCache[key] = url;
-          avatarDefaultTypeCache[key] = defaultType;
-          var cbs = avatarPending[key] || [];
-          delete avatarPending[key];
-          for (var i = 0; i < cbs.length; i++) cbs[i](url, defaultType);
+          // Case 2: GM followed the redirect – we got the final image
+          var blobUrl = '';
+          try {
+            var ct = resp.responseHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg';
+            blobUrl = URL.createObjectURL(new Blob([resp.response], { type: ct }));
+          } catch (e) { /* ignore */ }
+          var defaultType2 = detectDefaultAvatar(resp.finalUrl || '');
+          finish(blobUrl, defaultType2);
         },
-        onerror: function () {
-          var errSex = getUserSex(nick);
-          var errType = errSex === 1 ? 'female' : errSex === 0 ? 'male' : 'unisex';
-          var cbs = avatarPending[key] || [];
-          delete avatarPending[key];
-          for (var i = 0; i < cbs.length; i++) cbs[i]('', errType);
-        }
+        onerror: function () { finish('', null); }
       });
-    } catch (e) {
-      var catchSex = getUserSex(nick);
-      var catchType = catchSex === 1 ? 'female' : catchSex === 0 ? 'male' : 'unisex';
-      var cbs = avatarPending[key] || [];
-      delete avatarPending[key];
-      for (var i = 0; i < cbs.length; i++) cbs[i]('', catchType);
-    }
+    } catch (e) { finish('', null); }
   }
 
   function updateUnreadBadge(key, count) {
@@ -2759,9 +2767,6 @@
     var avatarInitials = document.createElement('span');
     avatarInitials.className = 'xchat-fw-avatar-initials';
     avatarWrap.appendChild(avatarInitials);
-    var immSex = getUserSex(nick);
-    var immType = immSex === 1 ? 'female' : immSex === 0 ? 'male' : 'unisex';
-    applyInitialsOverlay(avatarInitials, immType, nick);
 
     info.appendChild(avatarWrap);
 
@@ -2891,7 +2896,6 @@
     var headInitials = document.createElement('span');
     headInitials.className = 'xchat-fw-head-initials';
     head.appendChild(headInitials);
-    applyInitialsOverlay(headInitials, immType, nick);
 
     // Load avatar via cache – on hit, replace src with blob URL to avoid future HTTP requests
     loadAvatarUrl(nick, function (url, defaultType) {
