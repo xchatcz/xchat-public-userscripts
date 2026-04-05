@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.0
+// @version      1.3.1
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -1273,10 +1273,16 @@
   }
 
   function injectStyles() {
-    if (document.getElementById('xchat-greet-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'xchat-greet-styles';
-    style.textContent = [
+    // Reuse sheet stored on window.top (survives startframe / popup reloads)
+    try {
+      if (window.top._xchatGreetSheet) {
+        if (!document.adoptedStyleSheets.includes(window.top._xchatGreetSheet)) {
+          document.adoptedStyleSheets = [...document.adoptedStyleSheets, window.top._xchatGreetSheet];
+        }
+        return;
+      }
+    } catch {}
+    var cssText = [
       '.xchat-greet-btn {',
       '  cursor: pointer;',
       '  font-size: 10px;',
@@ -1355,6 +1361,19 @@
       '  cursor: pointer;',
       '}',
     ].join('\n');
+    // Persist as constructable stylesheet (created once, adopted into any new document)
+    try {
+      var sheet = new CSSStyleSheet();
+      sheet.replaceSync(cssText);
+      window.top._xchatGreetSheet = sheet;
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      return;
+    } catch {}
+    // Fallback: traditional <style> element
+    if (document.getElementById('xchat-greet-styles')) return;
+    var style = document.createElement('style');
+    style.id = 'xchat-greet-styles';
+    style.textContent = cssText;
     document.head.appendChild(style);
   }
 
@@ -3520,11 +3539,18 @@
     var existing = targetDoc.querySelector('.xchat-greet-modal-overlay');
     if (existing) existing.remove();
 
-    // Inject modal styles into infopage if not present
-    if (!targetDoc.getElementById('xchat-settings-modal-styles')) {
-      var s = targetDoc.createElement('style');
-      s.id = 'xchat-settings-modal-styles';
-      s.textContent = [
+    // Inject modal styles (reuse constructable sheet stored on window.top)
+    var _needsSettingsStyles = true;
+    try {
+      if (window.top._xchatSettingsSheet) {
+        if (!targetDoc.adoptedStyleSheets.includes(window.top._xchatSettingsSheet)) {
+          targetDoc.adoptedStyleSheets = [...targetDoc.adoptedStyleSheets, window.top._xchatSettingsSheet];
+        }
+        _needsSettingsStyles = false;
+      }
+    } catch {}
+    if (_needsSettingsStyles) {
+      var _settingsCss = [
         '.xchat-greet-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 99999; display: flex; align-items: center; justify-content: center; }',
         '.xchat-greet-modal { background: #fff; border: 1px solid #999; border-radius: 6px; padding: 12px 16px; min-width: 360px; max-height: 80vh; overflow-y: auto; font-family: arial, sans-serif; font-size: 12px; }',
         '.xchat-greet-modal h4 { margin: 0 0 8px 0; font-size: 13px; }',
@@ -3538,7 +3564,19 @@
         '.xchat-settings-row .nick-label { font-weight: bold; min-width: 80px; font-size: 11px; }',
         '.xchat-settings-delete { cursor: pointer; color: #c00; font-size: 13px; margin-left: 4px; }',
       ].join('\n');
-      targetDoc.head.appendChild(s);
+      try {
+        var _sSheet = new CSSStyleSheet();
+        _sSheet.replaceSync(_settingsCss);
+        window.top._xchatSettingsSheet = _sSheet;
+        targetDoc.adoptedStyleSheets = [...targetDoc.adoptedStyleSheets, _sSheet];
+      } catch {
+        if (!targetDoc.getElementById('xchat-settings-modal-styles')) {
+          var s = targetDoc.createElement('style');
+          s.id = 'xchat-settings-modal-styles';
+          s.textContent = _settingsCss;
+          targetDoc.head.appendChild(s);
+        }
+      }
     }
 
     var overlay = targetDoc.createElement('div');
@@ -4001,6 +4039,7 @@
     document.body.style.cssText = 'margin: 0; padding: 0; font-family: arial, helvetica, sans-serif; font-size: 12px; background: #f4f4f4; color: #333;';
 
     var style = document.createElement('style');
+    style.id = 'xchat-hist-styles';
     style.textContent = [
       '* { box-sizing: border-box; }',
       'html, body { height: 100%; }',
@@ -4393,10 +4432,16 @@
   // ── Startframe: greet buttons + board ──
 
   function injectFloatingStyles() {
-    if (document.getElementById('xchat-fw-styles')) return;
-    var style = document.createElement('style');
-    style.id = 'xchat-fw-styles';
-    style.textContent = [
+    // Reuse sheet stored on window.top (survives startframe / popup reloads)
+    try {
+      if (window.top._xchatFWSheet && window.top._xchatFWSkin === SKIN) {
+        if (!document.adoptedStyleSheets.includes(window.top._xchatFWSheet)) {
+          document.adoptedStyleSheets = [...document.adoptedStyleSheets, window.top._xchatFWSheet];
+        }
+        return;
+      }
+    } catch {}
+    var cssText = [
       '.xchat-fw-container {',
       '  position: fixed;',
       '  bottom: 0;',
@@ -4837,6 +4882,20 @@
       '}',
 
     ].join('\n');
+    // Persist as constructable stylesheet (created once, adopted into any new document)
+    try {
+      var sheet = new CSSStyleSheet();
+      sheet.replaceSync(cssText);
+      window.top._xchatFWSheet = sheet;
+      window.top._xchatFWSkin = SKIN;
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      return;
+    } catch {}
+    // Fallback: traditional <style> element
+    if (document.getElementById('xchat-fw-styles')) return;
+    var style = document.createElement('style');
+    style.id = 'xchat-fw-styles';
+    style.textContent = cssText;
     document.head.appendChild(style);
   }
 
