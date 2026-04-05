@@ -12,6 +12,7 @@
 // @connect      scripts.xchat.cz
 // @connect      www.xchat.cz
 // @connect      x.ximg.cz
+// @connect      ximg.cz
 // ==/UserScript==
 
 (function () {
