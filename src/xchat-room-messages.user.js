@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.3.2
+// @version      1.3.3
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -14,7 +14,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.3.2';
+  var SCRIPT_VERSION = '1.3.3';
 
   // Must match the domain relaxation used by all xchat frames,
   // otherwise cross-frame access (finding sendframe, top.whisper_to, etc.) fails.
@@ -2375,6 +2375,21 @@
     var fw = document.createElement('div');
     fw.className = 'xchat-fw';
     fw.dataset.nick = key;
+    fw.setAttribute('tabindex', '-1');
+
+    // Escape key minimizes the floating whisper window
+    fw.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!fw.classList.contains('xchat-fw-minimized')) {
+          fw.classList.add('xchat-fw-minimized');
+          head.classList.add('xchat-fw-head-visible');
+          saveFloatingState();
+          rescheduleWhisperUserIconsForState(key, false);
+        }
+      }
+    });
 
     // ── Header ──
     var header = document.createElement('div');
@@ -2386,11 +2401,31 @@
     // Avatar thumbnail in header (wrapped for status dot overlay)
     var avatarWrap = document.createElement('div');
     avatarWrap.className = 'xchat-fw-avatar-wrap';
+
+    // Avatar link — click opens anonymous profile
+    var avatarLink = document.createElement('a');
+    avatarLink.className = 'xchat-fw-avatar-link';
+    avatarLink.href = 'https://xchat.cz/' + encodeURIComponent(nick);
+    avatarLink.target = '_blank';
+    avatarLink.rel = 'noopener';
+
     var avatarImg = document.createElement('img');
     avatarImg.className = 'xchat-fw-header-avatar';
     avatarImg.src = 'https://www.xchat.cz/whoiswho/perphoto.php?nick=' + encodeURIComponent(nick);
     avatarImg.alt = nick;
-    avatarWrap.appendChild(avatarImg);
+    avatarLink.appendChild(avatarImg);
+
+    // Tooltip with arrow pointing down
+    var avatarTip = document.createElement('div');
+    avatarTip.className = 'xchat-fw-avatar-tip';
+    avatarTip.textContent = 'Nav\u0161t\u00edvit profil';
+    avatarLink.appendChild(avatarTip);
+
+    avatarLink.addEventListener('click', function (e) {
+      e.stopPropagation();
+    });
+
+    avatarWrap.appendChild(avatarLink);
     info.appendChild(avatarWrap);
 
     var infoTexts = document.createElement('div');
@@ -4751,6 +4786,38 @@
       '  height: 28px;',
       '  border-radius: 50%;',
       '  object-fit: cover;',
+      '  display: block;',
+      '}',
+      '.xchat-fw-avatar-link {',
+      '  display: block;',
+      '  position: relative;',
+      '  text-decoration: none;',
+      '}',
+      '.xchat-fw-avatar-tip {',
+      '  display: none;',
+      '  position: absolute;',
+      '  bottom: calc(100% + 8px);',
+      '  left: 50%;',
+      '  transform: translateX(-50%);',
+      '  background: rgba(0,0,0,.85);',
+      '  color: #fff;',
+      '  font-size: 11px;',
+      '  padding: 4px 8px;',
+      '  border-radius: 4px;',
+      '  white-space: nowrap;',
+      '  pointer-events: none;',
+      '  z-index: 10;',
+      '}',
+      '.xchat-fw-avatar-tip::after {',
+      '  content: "";',
+      '  position: absolute;',
+      '  top: 100%;',
+      '  left: 50%;',
+      '  transform: translateX(-50%);',
+      '  border: 5px solid transparent;',
+      '  border-top-color: rgba(0,0,0,.85);',
+      '}',
+      '.xchat-fw-avatar-link:hover .xchat-fw-avatar-tip {',
       '  display: block;',
       '}',
       '.xchat-fw-header-texts {',
