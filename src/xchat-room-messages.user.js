@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.6.1
+// @version      1.6.3
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.6.1';
+  var SCRIPT_VERSION = '1.6.3';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -2107,7 +2107,15 @@
 
   function loadAvatarUrl(nick, callback) {
     var key = nick.toLowerCase();
-    if (avatarCache[key]) { callback(avatarCache[key], avatarDefaultTypeCache[key] || null); return; }
+    if (avatarCache[key]) {
+      var dt = avatarDefaultTypeCache[key];
+      if (!dt) {
+        var s = getUserSex(nick);
+        dt = s === 1 ? 'female' : s === 0 ? 'male' : 'unisex';
+      }
+      callback(avatarCache[key], dt);
+      return;
+    }
     if (avatarPending[key]) { avatarPending[key].push(callback); return; }
     avatarPending[key] = [callback];
     try {
@@ -2126,22 +2134,20 @@
           if (/pict_muz\.gif/i.test(finalUrl)) defaultType = 'male';
           else if (/pict_zena\.gif/i.test(finalUrl)) defaultType = 'female';
           else if (/unisex\.png/i.test(finalUrl)) defaultType = 'unisex';
-          // Fallback: detect default avatar from response data
+          // Fallback: detect from response format (GIF/PNG = default, JPEG = custom photo)
           if (!defaultType && resp.response) {
             var bytes = new Uint8Array(resp.response);
-            var len = bytes.length;
-            // Default avatars are small (< 8KB) GIF or PNG files
-            // Real user photos are typically JPEG (FF D8 FF) and larger
-            if (len < 8192) {
-              var isGif = len > 3 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46; // GIF
-              var isPng = len > 3 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E; // PNG
-              if (isGif) {
-                var sex = getUserSex(nick);
-                defaultType = sex === 1 ? 'female' : sex === 0 ? 'male' : 'unisex';
-              } else if (isPng) {
-                defaultType = 'unisex';
-              }
+            var isGif = bytes.length > 3 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46;
+            var isPng = bytes.length > 3 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E;
+            if (isGif || isPng) {
+              var sex = getUserSex(nick);
+              defaultType = sex === 1 ? 'female' : sex === 0 ? 'male' : 'unisex';
             }
+          }
+          // Final fallback: if still unknown, use sex to show initials anyway
+          if (!defaultType) {
+            var sexFb = getUserSex(nick);
+            defaultType = sexFb === 1 ? 'female' : sexFb === 0 ? 'male' : 'unisex';
           }
           if (url) avatarCache[key] = url;
           avatarDefaultTypeCache[key] = defaultType;
@@ -2150,15 +2156,19 @@
           for (var i = 0; i < cbs.length; i++) cbs[i](url, defaultType);
         },
         onerror: function () {
+          var errSex = getUserSex(nick);
+          var errType = errSex === 1 ? 'female' : errSex === 0 ? 'male' : 'unisex';
           var cbs = avatarPending[key] || [];
           delete avatarPending[key];
-          for (var i = 0; i < cbs.length; i++) cbs[i]('');
+          for (var i = 0; i < cbs.length; i++) cbs[i]('', errType);
         }
       });
     } catch (e) {
+      var catchSex = getUserSex(nick);
+      var catchType = catchSex === 1 ? 'female' : catchSex === 0 ? 'male' : 'unisex';
       var cbs = avatarPending[key] || [];
       delete avatarPending[key];
-      for (var i = 0; i < cbs.length; i++) cbs[i]('');
+      for (var i = 0; i < cbs.length; i++) cbs[i]('', catchType);
     }
   }
 
@@ -2748,8 +2758,10 @@
 
     var avatarInitials = document.createElement('span');
     avatarInitials.className = 'xchat-fw-avatar-initials';
-    avatarInitials.textContent = getAvatarInitials(nick);
     avatarWrap.appendChild(avatarInitials);
+    var immSex = getUserSex(nick);
+    var immType = immSex === 1 ? 'female' : immSex === 0 ? 'male' : 'unisex';
+    applyInitialsOverlay(avatarInitials, immType, nick);
 
     info.appendChild(avatarWrap);
 
@@ -2878,8 +2890,8 @@
 
     var headInitials = document.createElement('span');
     headInitials.className = 'xchat-fw-head-initials';
-    headInitials.textContent = getAvatarInitials(nick);
     head.appendChild(headInitials);
+    applyInitialsOverlay(headInitials, immType, nick);
 
     // Load avatar via cache – on hit, replace src with blob URL to avoid future HTTP requests
     loadAvatarUrl(nick, function (url, defaultType) {
@@ -5175,7 +5187,7 @@
   function injectFloatingStyles() {
     // Reuse sheet stored on window.top (survives startframe / popup reloads)
     try {
-      if (window.top._xchatFWSheet && window.top._xchatFWSkin === SKIN) {
+      if (window.top._xchatFWSheet && window.top._xchatFWSkin === SKIN && window.top._xchatFWVer === SCRIPT_VERSION) {
         if (!document.adoptedStyleSheets.includes(window.top._xchatFWSheet)) {
           document.adoptedStyleSheets = [...document.adoptedStyleSheets, window.top._xchatFWSheet];
         }
@@ -5771,6 +5783,7 @@
       sheet.replaceSync(cssText);
       window.top._xchatFWSheet = sheet;
       window.top._xchatFWSkin = SKIN;
+      window.top._xchatFWVer = SCRIPT_VERSION;
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
       return;
     } catch {}
