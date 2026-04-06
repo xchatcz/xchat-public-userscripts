@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.7.2
+// @version      1.7.3
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.2';
+  var SCRIPT_VERSION = '1.7.3';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -171,8 +171,26 @@
   // Use unsafeWindow to bypass Tampermonkey sandbox wrapping — plain
   // window.top might return a per-frame Proxy where expando properties
   // are NOT shared between frames.
+  //
+  // Whisper popup windows (window.open) have their OWN window.top that
+  // is separate from the main chat window.  Follow the opener chain so
+  // that ALL windows (main + every popup) share a single queue object
+  // stored on the *main* window's top.
   var _topWin;
-  try { _topWin = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).top; } catch (e) { _topWin = window; }
+  try {
+    var _uw = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    _topWin = _uw.top;
+    // Walk opener chain to find the ultimate main window.
+    // opener.top gives the main window's top from a popup.
+    // Guard with try/catch — opener may be null, cross-origin, or closed.
+    try {
+      var _cur = _topWin;
+      while (_cur.opener && !_cur.opener.closed) {
+        _cur = _cur.opener.top;
+      }
+      _topWin = _cur;
+    } catch (_oe) { /* cross-origin opener — keep _topWin as-is */ }
+  } catch (e) { _topWin = window; }
 
   var _q;
   try {
@@ -184,6 +202,7 @@
     // Cross-origin fallback (should not happen on xchat.cz)
     _q = { queue: [], active: false, activeAt: 0, nextAt: 0 };
   }
+  console.log('[xchat-q] Queue owner window:', _topWin === (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).top ? 'LOCAL top' : 'OPENER top', '| frame:', location.href.replace(/.*\?/, '?').substring(0, 60));
 
   function pumpXchatHtmlJobQueue() {
     // Safety: force-reset a stuck job after 30 s (e.g. owning frame was destroyed
@@ -208,10 +227,12 @@
     var entry = _q.queue.shift();
     _q.active = true;
     _q.activeAt = Date.now();
+    console.log('[xchat-q] START job:', entry.key, '| pending:', _q.queue.length);
     Promise.resolve()
       .then(entry.job)
       .then(entry.resolve, entry.reject)
       .finally(function () {
+        console.log('[xchat-q] DONE  job:', entry.key);
         _q.active = false;
         _q.activeAt = 0;
         _q.nextAt = Date.now() + XCHAT_HTML_JOB_GAP_MS;
