@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Room Messages
 // @namespace    https://www.xchat.cz/
-// @version      1.7.1
+// @version      1.7.2
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.1';
+  var SCRIPT_VERSION = '1.7.2';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -168,38 +168,52 @@
   // ── Global job queue (shared across all script instances via window.top) ──
   // Each @match frame gets its own script closure, but the queue MUST be
   // single so that only one HTTP request to xchat.cz runs at any time.
+  // Use unsafeWindow to bypass Tampermonkey sandbox wrapping — plain
+  // window.top might return a per-frame Proxy where expando properties
+  // are NOT shared between frames.
+  var _topWin;
+  try { _topWin = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).top; } catch (e) { _topWin = window; }
+
   var _q;
   try {
-    if (!window.top._xchatJobQ) {
-      window.top._xchatJobQ = { queue: [], active: false, timer: null, nextAt: 0 };
+    if (!_topWin._xchatJobQ) {
+      _topWin._xchatJobQ = { queue: [], active: false, activeAt: 0, nextAt: 0 };
     }
-    _q = window.top._xchatJobQ;
+    _q = _topWin._xchatJobQ;
   } catch (e) {
     // Cross-origin fallback (should not happen on xchat.cz)
-    _q = { queue: [], active: false, timer: null, nextAt: 0 };
+    _q = { queue: [], active: false, activeAt: 0, nextAt: 0 };
   }
 
   function pumpXchatHtmlJobQueue() {
+    // Safety: force-reset a stuck job after 30 s (e.g. owning frame was destroyed
+    // and the promise .finally() callback was discarded by the engine).
+    if (_q.active && _q.activeAt && Date.now() - _q.activeAt > 30000) {
+      console.warn('[xchat-q] Force-resetting stuck queue after 30 s');
+      _q.active = false;
+      _q.activeAt = 0;
+    }
     if (_q.active) return;
     if (!_q.queue.length) return;
-    if (_q.timer) return;
 
     var waitMs = Math.max(0, _q.nextAt - Date.now());
     if (waitMs > 0) {
-      _q.timer = setTimeout(function () {
-        _q.timer = null;
-        pumpXchatHtmlJobQueue();
-      }, waitMs);
+      // No shared timer flag — each caller schedules its own timer.
+      // Duplicate timer firings are harmless: the _q.active check above
+      // ensures only one job runs at a time.
+      setTimeout(pumpXchatHtmlJobQueue, waitMs);
       return;
     }
 
     var entry = _q.queue.shift();
     _q.active = true;
+    _q.activeAt = Date.now();
     Promise.resolve()
       .then(entry.job)
       .then(entry.resolve, entry.reject)
       .finally(function () {
         _q.active = false;
+        _q.activeAt = 0;
         _q.nextAt = Date.now() + XCHAT_HTML_JOB_GAP_MS;
         pumpXchatHtmlJobQueue();
       });
@@ -2363,10 +2377,13 @@
     var url = 'https://scripts.xchat.cz/scripts/wonline.php?nick=' + encodeURIComponent(nick);
     return new Promise(function (resolve) {
       if (typeof GM_xmlhttpRequest !== 'function') {
-        console.error('[xchat-fw] GM_xmlhttpRequest not available, falling back to fetch (through queue)');
-        enqueueXchatHtmlJob('fw-wonline-fallback:' + normNick(nick), function () {
-          return fetch(url).then(function (r) { return r.text(); });
-        }).then(function (t) { resolve(t || ''); }).catch(function () { resolve(''); });
+        // Fallback: use fetch directly.  fetchWonline is always called from
+        // inside an active queue job, so nesting another enqueueXchatHtmlJob
+        // would deadlock.  A direct fetch is safe here — the queue already
+        // holds the "active" lock.
+        fetch(url).then(function (r) { return r.text(); })
+          .then(function (t) { resolve(t || ''); })
+          .catch(function () { resolve(''); });
         return;
       }
       GM_xmlhttpRequest({
