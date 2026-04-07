@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.14
+// @version      1.7.15
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.14';
+  var SCRIPT_VERSION = '1.7.15';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -206,7 +206,7 @@
   var ROOM_BOARD_MAX_KEYS = 250;
   var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
   var XCHAT_HTML_JOB_GAP_MS = 100;
-  var XCHAT_MAX_PENDING_JOBS = 5;
+  var XCHAT_MAX_PENDING_JOBS = 1;
   var FW_USER_ICON_CACHE_TTL_MS = 60000;
   var FW_USER_ICON_OPEN_REFRESH_MS = 60000;
   var FW_USER_ICON_MINIMIZED_REFRESH_MS = 300000;
@@ -323,9 +323,23 @@
       });
   }
 
+  // Job priority: main-board > reloadpage-poll > sync-idle > fw-* > avatars
+  // Higher number = higher priority.
+  var JOB_PRIORITY = {
+    'main-board': 90,
+    'reloadpage-poll': 80,
+    'sync-idle': 70
+    // Everything else (fw-messages, fw-frameset, fw-userpage, etc.) defaults to 10
+  };
+  function getJobPriority(key) {
+    if (JOB_PRIORITY[key] != null) return JOB_PRIORITY[key];
+    return 10;
+  }
+
   function enqueueXchatHtmlJob(key, job) {
     if (!_frameNeedsQueue) return Promise.resolve(null);
     return new Promise(function (resolve, reject) {
+      // Dedup: remove existing job with same key
       var deduped = false;
       for (var i = _localQueue.length - 1; i >= 0; i--) {
         if (_localQueue[i].key === key) {
@@ -334,12 +348,29 @@
           deduped = true;
         }
       }
-      // Cap queue size — if already at limit, drop this job (poll retries next cycle)
+      // Cap: at most XCHAT_MAX_PENDING_JOBS in queue
       if (!deduped && _localQueue.length >= XCHAT_MAX_PENDING_JOBS) {
-        console.log('[xchat-q] DROP:', key, '| queue full:', _localQueue.length,
-                    '(' + _localQueue.map(function (e) { return e.key; }).join(', ') + ')');
-        resolve(null);
-        return;
+        var newPrio = getJobPriority(key);
+        // Find the lowest-priority job in the queue
+        var lowestIdx = 0;
+        var lowestPrio = getJobPriority(_localQueue[0].key);
+        for (var j = 1; j < _localQueue.length; j++) {
+          var jp = getJobPriority(_localQueue[j].key);
+          if (jp < lowestPrio) { lowestPrio = jp; lowestIdx = j; }
+        }
+        if (newPrio > lowestPrio) {
+          // Evict the lowest-priority job to make room
+          var evicted = _localQueue.splice(lowestIdx, 1)[0];
+          console.log('[xchat-q] EVICT:', evicted.key, '(prio ' + lowestPrio + ')',
+                      '| replaced by:', key, '(prio ' + newPrio + ')');
+          evicted.resolve(null);
+        } else {
+          // New job is same or lower priority — drop it
+          console.log('[xchat-q] DROP:', key, '(prio ' + newPrio + ')',
+                      '| queue full:', _localQueue.map(function (e) { return e.key; }).join(', '));
+          resolve(null);
+          return;
+        }
       }
       _localQueue.push({ key: key, job: job, resolve: resolve, reject: reject });
       console.log('[xchat-q] ENQUEUE:', key, '| queue size:', _localQueue.length,
