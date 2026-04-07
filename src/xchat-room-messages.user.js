@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.4
+// @version      1.7.5
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.4';
+  var SCRIPT_VERSION = '1.7.5';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -185,6 +185,9 @@
   var _localPumping = false;
   var _hasNavLocks = typeof navigator !== 'undefined' && navigator.locks
                      && typeof navigator.locks.request === 'function';
+  var XCHAT_JOB_TIMEOUT_MS = 20000;
+  console.log('[xchat-q] Web Locks available:', _hasNavLocks,
+              '| frame:', location.href.replace(/.*\?/, '?').substring(0, 60));
 
   function pumpXchatHtmlJobQueue() {
     if (_localPumping) return;
@@ -194,27 +197,46 @@
     var entry = _localQueue.shift();
 
     function execJob() {
-      console.log('[xchat-q] START job:', entry.key, '| pending:', _localQueue.length,
-                  '| frame:', location.href.replace(/.*\?/, '?').substring(0, 60));
+      var t0 = Date.now();
+      console.log('[xchat-q] START job:', entry.key, '| pending:', _localQueue.length);
       return Promise.resolve()
         .then(entry.job)
         .then(entry.resolve, entry.reject)
         .then(function () {
-          console.log('[xchat-q] DONE  job:', entry.key);
+          console.log('[xchat-q] DONE  job:', entry.key, '| took:', (Date.now() - t0) + 'ms');
           return new Promise(function (r) { setTimeout(r, XCHAT_HTML_JOB_GAP_MS); });
         });
     }
 
+    // Wrap with a timeout so a hung fetch can never hold the lock forever.
+    // After timeout the lock is released and the next job can proceed.
+    // The timed-out fetch continues in the background but its result is
+    // ignored (entry.resolve/reject may fire late — harmless).
+    var timeoutReject;
+    var timeoutPromise = new Promise(function (_, rej) {
+      timeoutReject = rej;
+    });
+    var timeoutId = setTimeout(function () {
+      console.warn('[xchat-q] TIMEOUT job:', entry.key, 'after', XCHAT_JOB_TIMEOUT_MS + 'ms');
+      try { entry.resolve(null); } catch (e) {}
+      timeoutReject(new Error('xchat-q job timeout'));
+    }, XCHAT_JOB_TIMEOUT_MS);
+
+    function execWithTimeout() {
+      return Promise.race([execJob(), timeoutPromise])
+        .finally(function () { clearTimeout(timeoutId); });
+    }
+
     var jobDone;
     if (_hasNavLocks) {
-      jobDone = navigator.locks.request('xchat-http-job', execJob);
+      jobDone = navigator.locks.request('xchat-http-job', execWithTimeout);
     } else {
       // Fallback for very old browsers — per-frame serial only.
-      jobDone = execJob();
+      jobDone = execWithTimeout();
     }
 
     jobDone
-      .catch(function () { /* lock-abort or job error — continue pumping */ })
+      .catch(function () { /* lock-abort, timeout, or job error — continue pumping */ })
       .finally(function () {
         _localPumping = false;
         pumpXchatHtmlJobQueue();
@@ -1112,6 +1134,7 @@
         .then(function (buf) { return ROOM_BOARD_TEXT_DECODER.decode(buf); })
         .then(function (html) {
           if (!state.active) return;
+          var t0 = Date.now();
           var lines = parseRoomBoardBodyLines(html);
           if (lines.length === 0) return;
 
@@ -1136,6 +1159,7 @@
           }
 
           state.lastLine += lines.length;
+          console.log('[xchat-q] main-board process:', lines.length, 'lines in', (Date.now() - t0) + 'ms');
         });
     })
       .catch(function () {})
@@ -3237,6 +3261,7 @@
               .then(function (buf) { return new TextDecoder('iso-8859-2').decode(buf); })
               .then(function (rfHtml) {
                 if (!floatingWindows[key]) return;
+                var t0fw = Date.now();
 
                 // The body contains nested <font> wrappers then messages separated by <br>
                 // Structure: <body ...><font face="..."><font size="2">
@@ -3429,6 +3454,7 @@
                     msgContainer.scrollTop = msgContainer.scrollHeight;
                   }
                 }
+                console.log('[xchat-q] fw-messages:' + key + ' process:', parsedMsgs.length, 'msgs (' + newMsgCount + ' new) in', (Date.now() - t0fw) + 'ms');
               });
             })
               .catch(function () {})
