@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.10
+// @version      1.7.11
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.10';
+  var SCRIPT_VERSION = '1.7.11';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -95,12 +95,28 @@
   }
 
   // Run immediately and re-check for newly loaded frames
-  blockTrackingInAllFrames();
-  var _trackBlockCount = 0;
-  var _trackBlockTimer = setInterval(function () {
+  // Only the first instance (startframe or first-to-load) does ALL frames;
+  // others only block in their own document to reduce cross-frame access cost.
+  (function () {
+    try { blockTrackingInDoc(document); } catch {}
+    var isMainScanner = _frameOp === 'startframe';
+    try {
+      if (!window.top._xchatTrackScannerClaimed) {
+        window.top._xchatTrackScannerClaimed = true;
+        isMainScanner = true;
+      }
+    } catch {}
+    if (!isMainScanner) return;
     blockTrackingInAllFrames();
-    if (++_trackBlockCount >= 10) clearInterval(_trackBlockTimer);
-  }, 1000);
+    var _trackBlockCount = 0;
+    var _trackBlockTimer = setInterval(function () {
+      var t0 = Date.now();
+      blockTrackingInAllFrames();
+      var dt = Date.now() - t0;
+      if (dt > 50) console.warn('[xchat-diag] blockTrackingInAllFrames took', dt + 'ms');
+      if (++_trackBlockCount >= 10) clearInterval(_trackBlockTimer);
+    }, 1000);
+  })();
 
   // ── Frame role detection ──
   // The script runs in every frame matching @match – up to 8 instances at once.
@@ -262,26 +278,25 @@
 
   // ── Main-thread freeze detector ──
   // A heartbeat timer fires every 1s.  If the gap between two ticks exceeds
-  // 2s, the main thread was blocked (frozen).  Logs the duration and the
-  // queue state at that moment so we can correlate with fetches / DOM work.
+  // the threshold, the main thread was blocked (frozen).  Runs in ALL frames
+  // to detect freezes outside the queue context.
   var _heartbeatLast = Date.now();
   var _heartbeatCurrentJob = null;
-  if (_frameNeedsQueue) {
-    setInterval(function () {
-      var now = Date.now();
-      var gap = now - _heartbeatLast;
-      if (gap > 2000) {
-        var pendingKeys = _localQueue.map(function (e) { return e.key; });
-        console.warn('[xchat-freeze] MAIN THREAD BLOCKED for', gap + 'ms',
-                     '| frame:', _frameOp,
-                     '| current job:', _heartbeatCurrentJob || '(none)',
-                     '| pumping:', _localPumping,
-                     '| pending:', pendingKeys.length,
-                     pendingKeys.length ? '(' + pendingKeys.join(', ') + ')' : '');
-      }
-      _heartbeatLast = now;
-    }, 1000);
-  }
+  var FREEZE_THRESHOLD_MS = 800;
+  setInterval(function () {
+    var now = Date.now();
+    var gap = now - _heartbeatLast;
+    if (gap > FREEZE_THRESHOLD_MS) {
+      var pendingKeys = _localQueue.map(function (e) { return e.key; });
+      console.warn('[xchat-freeze] MAIN THREAD BLOCKED for', gap + 'ms',
+                   '| frame:', _frameOp,
+                   '| current job:', _heartbeatCurrentJob || '(none)',
+                   '| pumping:', _localPumping,
+                   '| pending:', pendingKeys.length,
+                   pendingKeys.length ? '(' + pendingKeys.join(', ') + ')' : '');
+    }
+    _heartbeatLast = now;
+  }, 1000);
 
   function pumpXchatHtmlJobQueue() {
     if (!_frameNeedsQueue) return;
@@ -918,6 +933,11 @@
     var parts = timeStr.split(':');
     if (parts.length === 3) {
       now.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10), 0);
+      // Detect midnight rollover: if the resulting time is >12h ahead of
+      // real current time, the message is from yesterday
+      if (now.getTime() > Date.now() + 12 * 3600000) {
+        now.setDate(now.getDate() - 1);
+      }
     }
 
     var msgSpan = div.querySelector('.umsg_room, .umsg_roomi, .umsg_whisper, .umsg_whisperi, .umsg_wcross, .umsg_wcrossi, .umsg_wsystem, .umsg_advert, .umsg_whw, .umsg_whwi');
@@ -3481,7 +3501,14 @@
                   var msgType = isMine ? 'whisper_out' : 'whisper';
                   var now = new Date();
                   var tp = m.time.split(':');
-                  if (tp.length === 3) now.setHours(parseInt(tp[0], 10), parseInt(tp[1], 10), parseInt(tp[2], 10), 0);
+                  if (tp.length === 3) {
+                    now.setHours(parseInt(tp[0], 10), parseInt(tp[1], 10), parseInt(tp[2], 10), 0);
+                    // Detect midnight rollover: if the resulting time is >12h ahead of
+                    // real current time, the message is from yesterday
+                    if (now.getTime() > Date.now() + 12 * 3600000) {
+                      now.setDate(now.getDate() - 1);
+                    }
+                  }
                   var textPlain = m.text.replace(/<[^>]+>/g, '').trim();
                   var rec = {
                     room_id: getRoomId(),
@@ -3830,9 +3857,30 @@
           rescheduleWhisperUserIconsForState(key, false);
         }
       })
-      .catch(function () {
-        // Fallback: show error in body
-        body.textContent = 'Nepoda\u0159ilo se na\u010d\u00edst \u0161ept.';
+      .catch(function (err) {
+        console.error('[xchat-fw] loadContent failed for', key, err);
+        // Reset loaded flag so retry is possible
+        if (floatingWindows[key]) floatingWindows[key].loaded = false;
+        // Show error with retry link
+        body.textContent = '';
+        var errMsg = document.createElement('span');
+        errMsg.textContent = 'Nepoda\u0159ilo se na\u010d\u00edst \u0161ept. ';
+        body.appendChild(errMsg);
+        var retryLink = document.createElement('a');
+        retryLink.href = '#';
+        retryLink.textContent = 'Zkusit znovu';
+        retryLink.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (floatingWindows[key] && floatingWindows[key].loadContent) floatingWindows[key].loadContent();
+        });
+        body.appendChild(retryLink);
+        // Auto-retry after 3s (auth/rid may not be ready yet after reload)
+        setTimeout(function () {
+          if (floatingWindows[key] && !floatingWindows[key].loaded) {
+            console.log('[xchat-fw] auto-retrying loadContent for', key);
+            loadContent();
+          }
+        }, 3000);
       });
     };
     if (floatingWindows[key]) floatingWindows[key].loadContent = loadContent;
