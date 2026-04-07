@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.13
+// @version      1.7.14
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.13';
+  var SCRIPT_VERSION = '1.7.14';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -36,6 +36,9 @@
   try { document.domain = 'xchat.cz'; } catch {}
 
   // ── Block tracking / analytics scripts ──
+  // Each @match frame blocks tracking in its OWN document only — no cross-frame
+  // scanning needed because the script runs in every frame.  The MutationObserver
+  // is disconnected after 30 s to eliminate ongoing overhead.
   var BLOCKED_SCRIPT_HOSTS = ['assets.adobedtm.com'];
 
   function isBlockedSrc(src) {
@@ -46,19 +49,17 @@
     return false;
   }
 
-  function blockTrackingInDoc(doc) {
-    if (!doc || doc._xchatTrackBlocked) return;
-    doc._xchatTrackBlocked = true;
-    // Remove existing script tags
+  (function () {
+    // Remove existing tracking scripts
     try {
-      var scripts = doc.querySelectorAll('script[src]');
+      var scripts = document.querySelectorAll('script[src]');
       for (var si = 0; si < scripts.length; si++) {
         if (isBlockedSrc(scripts[si].src)) scripts[si].remove();
       }
     } catch {}
-    // Watch for dynamically inserted scripts
+    // Watch for dynamically inserted tracking scripts
     try {
-      new MutationObserver(function (muts) {
+      var mo = new MutationObserver(function (muts) {
         for (var m = 0; m < muts.length; m++) {
           var added = muts[m].addedNodes;
           for (var n = 0; n < added.length; n++) {
@@ -73,49 +74,11 @@
             } catch {}
           }
         }
-      }).observe(doc.documentElement || doc, { childList: true, subtree: true });
+      });
+      mo.observe(document.documentElement || document, { childList: true, subtree: true });
+      // Disconnect after 30s — tracking scripts won't appear later
+      setTimeout(function () { mo.disconnect(); }, 30000);
     } catch {}
-  }
-
-  function blockTrackingInAllFrames() {
-    try { blockTrackingInDoc(document); } catch {}
-    try { blockTrackingInDoc(window.top.document); } catch {}
-    try {
-      var topFrames = window.top.frames;
-      for (var i = 0; i < topFrames.length; i++) {
-        try { blockTrackingInDoc(topFrames[i].document); } catch {}
-        try {
-          var sub = topFrames[i].frames;
-          for (var j = 0; j < sub.length; j++) {
-            try { blockTrackingInDoc(sub[j].document); } catch {}
-          }
-        } catch {}
-      }
-    } catch {}
-  }
-
-  // Run immediately and re-check for newly loaded frames
-  // Only the first instance (startframe or first-to-load) does ALL frames;
-  // others only block in their own document to reduce cross-frame access cost.
-  (function () {
-    try { blockTrackingInDoc(document); } catch {}
-    var isMainScanner = _frameOp === 'startframe';
-    try {
-      if (!window.top._xchatTrackScannerClaimed) {
-        window.top._xchatTrackScannerClaimed = true;
-        isMainScanner = true;
-      }
-    } catch {}
-    if (!isMainScanner) return;
-    blockTrackingInAllFrames();
-    var _trackBlockCount = 0;
-    var _trackBlockTimer = setInterval(function () {
-      var t0 = Date.now();
-      blockTrackingInAllFrames();
-      var dt = Date.now() - t0;
-      if (dt > 50) console.warn('[xchat-diag] blockTrackingInAllFrames took', dt + 'ms');
-      if (++_trackBlockCount >= 10) clearInterval(_trackBlockTimer);
-    }, 1000);
   })();
 
   // ── Frame role detection ──
@@ -242,7 +205,7 @@
   var IDLE_DB_TIMEOUT_MS = 1000;
   var ROOM_BOARD_MAX_KEYS = 250;
   var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
-  var XCHAT_HTML_JOB_GAP_MS = 250;
+  var XCHAT_HTML_JOB_GAP_MS = 100;
   var XCHAT_MAX_PENDING_JOBS = 5;
   var FW_USER_ICON_CACHE_TTL_MS = 60000;
   var FW_USER_ICON_OPEN_REFRESH_MS = 60000;
@@ -262,9 +225,9 @@
   // the lock automatically — no 30-second stuck-job timeout needed.
   //
   // Each frame keeps a LOCAL job queue with per-key dedup.  Only one job at a
-  // time actually acquires the cross-window lock, executes the fetch, waits
-  // the 250 ms gap, and then releases the lock for the next waiter (which may
-  // live in any window/frame).
+  // time actually acquires the cross-window lock and executes the fetch.
+  // The lock is released immediately after the fetch completes; the inter-job
+  // gap runs OUTSIDE the lock so other windows can acquire it sooner.
 
   var _localQueue = [];
   var _localPumping = false;
@@ -319,7 +282,6 @@
         .then(function () {
           console.log('[xchat-q] DONE  job:', entry.key, '| took:', (Date.now() - t0) + 'ms');
           _heartbeatCurrentJob = null;
-          return new Promise(function (r) { setTimeout(r, XCHAT_HTML_JOB_GAP_MS); });
         });
     }
 
@@ -353,8 +315,11 @@
     jobDone
       .catch(function () { /* lock-abort, timeout, or job error — continue pumping */ })
       .finally(function () {
-        _localPumping = false;
-        pumpXchatHtmlJobQueue();
+        // Inter-job gap runs OUTSIDE the lock — other windows can now acquire it.
+        setTimeout(function () {
+          _localPumping = false;
+          pumpXchatHtmlJobQueue();
+        }, XCHAT_HTML_JOB_GAP_MS);
       });
   }
 
