@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.6
+// @version      1.7.7
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
 // @match        https://www.xchat.cz/*/modchat?op=titlepage*
 // @match        https://www.xchat.cz/*/modchat?op=reloadpage*
 // @match        https://www.xchat.cz/*/modchat?op=roomframeng*
+// @match        https://www.xchat.cz/*/modchat?op=roomtopng*
+// @match        https://www.xchat.cz/*/modchat?op=textpageng*
 // @match        https://www.xchat.cz/*/history.html*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
@@ -20,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.6';
+  var SCRIPT_VERSION = '1.7.7';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -101,8 +103,9 @@
   }, 1000);
 
   // ── Frame role detection ──
-  // The script runs in every frame matching @match – up to 6 instances at once.
+  // The script runs in every frame matching @match – up to 8 instances at once.
   // Only startframe and reloadpage make HTTP requests; others are passive.
+  // Passive frames: titlepage, roomframeng, roomtopng (×2), textpageng, history, infopage.
   var _frameOp = (function () {
     var m = location.search.match(/[?&]op=([^&]+)/);
     if (m) return m[1];
@@ -6066,6 +6069,78 @@
     setTimeout(runReloadpagePoll, TIMERS.reloadpagePoll.intervalMs);
   }
 
+  // ══════════════════════════════════════════════════════════════════
+  // ── Kill native refresh in passive frames ──
+  // These frames previously had NO @match so native polling ran unchecked.
+  // Now we inject only to kill <meta Refresh>, onload, cID, refresh()/doLoad().
+  // No HTTP requests are made from these init functions.
+  // ══════════════════════════════════════════════════════════════════
+
+  /** Kill all native refresh mechanisms in the current document. */
+  function killNativeRefreshInCurrentDoc() {
+    // 1. Remove <meta http-equiv="Refresh">
+    try {
+      var metas = document.querySelectorAll('meta[http-equiv="Refresh" i]');
+      for (var i = 0; i < metas.length; i++) metas[i].remove();
+    } catch {}
+    // 2. Remove body onload
+    try { document.body && document.body.removeAttribute('onload'); } catch {}
+    // 3. Kill cID interval (top and local)
+    try { if (window.cID) { clearInterval(window.cID); window.cID = null; } } catch {}
+    try { if (window.top.cID) { clearInterval(window.top.cID); window.top.cID = null; } } catch {}
+    // 4. Trap refresh() / doLoad() as noops
+    var noop = function () {};
+    ['refresh', 'doLoad'].forEach(function (fn) {
+      try {
+        Object.defineProperty(window, fn, {
+          get: function () { return noop; },
+          set: function () {},
+          configurable: true,
+          enumerable: true
+        });
+      } catch (e) {
+        try { window[fn] = noop; } catch {}
+      }
+    });
+  }
+
+  // ── titlepage ──
+  function initTitlepage() {
+    console.log('[xchat-rm] initTitlepage: killing native refresh');
+    killNativeRefreshInCurrentDoc();
+  }
+
+  // ── roomframeng (frameset container) ──
+  function initRoomframeng() {
+    console.log('[xchat-rm] initRoomframeng: killing native refresh');
+    killNativeRefreshInCurrentDoc();
+  }
+
+  // ── roomtopng ──
+  // Both the visible board frame (roomframetop) and the hidden polling frame
+  // (dataframe) use op=roomtopng.  The startframe load guard already kills
+  // dataframe navigations from the outside, but running here means we catch
+  // the meta refresh BEFORE the browser schedules the navigation (because
+  // @run-at document-start).
+  function initRoomtopng() {
+    console.log('[xchat-rm] initRoomtopng: killing native refresh');
+    killNativeRefreshInCurrentDoc();
+    // Re-kill periodically — native JS may set up cID/refresh late
+    var killCount = 0;
+    var killTimer = setInterval(function () {
+      killNativeRefreshInCurrentDoc();
+      if (++killCount >= NATIVE_REFRESH_KILL_MAX_ATTEMPTS) clearInterval(killTimer);
+    }, NATIVE_REFRESH_KILL_RETRY_MS);
+  }
+
+  // ── textpageng (send frame / message input) ──
+  // No native polling here, but intercept to be consistent and prevent any
+  // unexpected meta refresh.
+  function initTextpageng() {
+    console.log('[xchat-rm] initTextpageng: killing native refresh');
+    killNativeRefreshInCurrentDoc();
+  }
+
   // ── Boot ──
 
   function boot() {
@@ -6073,6 +6148,10 @@
     if (op === 'startframe') initStartframe();
     else if (op === 'infopage') initInfopage();
     else if (op === 'reloadpage') initReloadpage();
+    else if (op === 'titlepage') initTitlepage();
+    else if (op === 'roomframeng') initRoomframeng();
+    else if (op === 'roomtopng') initRoomtopng();
+    else if (op === 'textpageng') initTextpageng();
     else if (/history\.html/.test(location.pathname)) initHistoryPage();
   }
 
