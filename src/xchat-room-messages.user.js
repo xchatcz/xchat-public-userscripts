@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.12
+// @version      1.7.13
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.12';
+  var SCRIPT_VERSION = '1.7.13';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -243,7 +243,7 @@
   var ROOM_BOARD_MAX_KEYS = 250;
   var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
   var XCHAT_HTML_JOB_GAP_MS = 250;
-  var XCHAT_MAX_PENDING_JOBS = 1;
+  var XCHAT_MAX_PENDING_JOBS = 5;
   var FW_USER_ICON_CACHE_TTL_MS = 60000;
   var FW_USER_ICON_OPEN_REFRESH_MS = 60000;
   var FW_USER_ICON_MINIMIZED_REFRESH_MS = 300000;
@@ -277,26 +277,27 @@
   }
 
   // ── Main-thread freeze detector ──
-  // A heartbeat timer fires every 1s.  If the gap between two ticks exceeds
-  // the threshold, the main thread was blocked (frozen).  Runs in ALL frames
-  // to detect freezes outside the queue context.
+  // A heartbeat timer fires every 500ms.  If the gap between two ticks exceeds
+  // 3s, the main thread was genuinely blocked.  Only startframe reports —
+  // all frames share one renderer, so one report suffices.
   var _heartbeatLast = Date.now();
   var _heartbeatCurrentJob = null;
-  var FREEZE_THRESHOLD_MS = 800;
-  setInterval(function () {
-    var now = Date.now();
-    var gap = now - _heartbeatLast;
-    if (gap > FREEZE_THRESHOLD_MS) {
-      var pendingKeys = _localQueue.map(function (e) { return e.key; });
-      console.warn('[xchat-freeze] MAIN THREAD BLOCKED for', gap + 'ms',
-                   '| frame:', _frameOp,
-                   '| current job:', _heartbeatCurrentJob || '(none)',
-                   '| pumping:', _localPumping,
-                   '| pending:', pendingKeys.length,
-                   pendingKeys.length ? '(' + pendingKeys.join(', ') + ')' : '');
-    }
-    _heartbeatLast = now;
-  }, 1000);
+  var FREEZE_THRESHOLD_MS = 3000;
+  if (_frameOp === 'startframe') {
+    setInterval(function () {
+      var now = Date.now();
+      var gap = now - _heartbeatLast;
+      if (gap > FREEZE_THRESHOLD_MS) {
+        var pendingKeys = _localQueue.map(function (e) { return e.key; });
+        console.warn('[xchat-freeze] MAIN THREAD BLOCKED for', gap + 'ms',
+                     '| current job:', _heartbeatCurrentJob || '(none)',
+                     '| pumping:', _localPumping,
+                     '| pending:', pendingKeys.length,
+                     pendingKeys.length ? '(' + pendingKeys.join(', ') + ')' : '');
+      }
+      _heartbeatLast = now;
+    }, 500);
+  }
 
   function pumpXchatHtmlJobQueue() {
     if (!_frameNeedsQueue) return;
