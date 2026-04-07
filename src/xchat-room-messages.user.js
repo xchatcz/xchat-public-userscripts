@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.7
+// @version      1.7.8
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.7';
+  var SCRIPT_VERSION = '1.7.8';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -269,7 +269,9 @@
 
     function execJob() {
       var t0 = Date.now();
-      console.log('[xchat-q] START job:', entry.key, '| pending:', _localQueue.length);
+      var pendingKeys = _localQueue.map(function (e) { return e.key; });
+      console.log('[xchat-q] START job:', entry.key, '| pending:', pendingKeys.length,
+                  pendingKeys.length ? '(' + pendingKeys.join(', ') + ')' : '');
       return Promise.resolve()
         .then(entry.job)
         .then(entry.resolve, entry.reject)
@@ -317,13 +319,17 @@
   function enqueueXchatHtmlJob(key, job) {
     if (!_frameNeedsQueue) return Promise.resolve(null);
     return new Promise(function (resolve, reject) {
+      var deduped = false;
       for (var i = _localQueue.length - 1; i >= 0; i--) {
         if (_localQueue[i].key === key) {
           _localQueue[i].resolve(null);
           _localQueue.splice(i, 1);
+          deduped = true;
         }
       }
       _localQueue.push({ key: key, job: job, resolve: resolve, reject: reject });
+      console.log('[xchat-q] ENQUEUE:', key, '| queue size:', _localQueue.length,
+                  '| pumping:', _localPumping, deduped ? '| (replaced old)' : '');
       pumpXchatHtmlJobQueue();
     });
   }
