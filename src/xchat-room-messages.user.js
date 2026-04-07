@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         XChat Room Messages
+// @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.3
+// @version      1.7.4
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.3';
+  var SCRIPT_VERSION = '1.7.4';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -165,90 +165,71 @@
   var NATIVE_REFRESH_KILL_RETRY_MS = 500;
   var NATIVE_REFRESH_KILL_MAX_ATTEMPTS = 20;
 
-  // ── Global job queue (shared across all script instances via window.top) ──
-  // Each @match frame gets its own script closure, but the queue MUST be
-  // single so that only one HTTP request to xchat.cz runs at any time.
-  // Use unsafeWindow to bypass Tampermonkey sandbox wrapping — plain
-  // window.top might return a per-frame Proxy where expando properties
-  // are NOT shared between frames.
+  // ── Global job queue (serialised across ALL windows/frames via Web Locks) ──
+  // Each @match frame AND each whisper popup window gets its own JS closure.
+  // We must guarantee that at most ONE HTTP request to xchat.cz is in-flight
+  // at any time across ALL of them.
   //
-  // Whisper popup windows (window.open) have their OWN window.top that
-  // is separate from the main chat window.  Follow the opener chain so
-  // that ALL windows (main + every popup) share a single queue object
-  // stored on the *main* window's top.
-  var _topWin;
-  try {
-    var _uw = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    _topWin = _uw.top;
-    // Walk opener chain to find the ultimate main window.
-    // opener.top gives the main window's top from a popup.
-    // Guard with try/catch — opener may be null, cross-origin, or closed.
-    try {
-      var _cur = _topWin;
-      while (_cur.opener && !_cur.opener.closed) {
-        _cur = _cur.opener.top;
-      }
-      _topWin = _cur;
-    } catch (_oe) { /* cross-origin opener — keep _topWin as-is */ }
-  } catch (e) { _topWin = window; }
+  // navigator.locks (Web Locks API, Chrome 69+) provides a native cross-window
+  // mutex:  when one frame holds the lock, every other frame/popup that calls
+  // navigator.locks.request() waits in a FIFO queue.  If the frame holding the
+  // lock is destroyed (iframe navigates, popup closes), the browser releases
+  // the lock automatically — no 30-second stuck-job timeout needed.
+  //
+  // Each frame keeps a LOCAL job queue with per-key dedup.  Only one job at a
+  // time actually acquires the cross-window lock, executes the fetch, waits
+  // the 250 ms gap, and then releases the lock for the next waiter (which may
+  // live in any window/frame).
 
-  var _q;
-  try {
-    if (!_topWin._xchatJobQ) {
-      _topWin._xchatJobQ = { queue: [], active: false, activeAt: 0, nextAt: 0 };
-    }
-    _q = _topWin._xchatJobQ;
-  } catch (e) {
-    // Cross-origin fallback (should not happen on xchat.cz)
-    _q = { queue: [], active: false, activeAt: 0, nextAt: 0 };
-  }
-  console.log('[xchat-q] Queue owner window:', _topWin === (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).top ? 'LOCAL top' : 'OPENER top', '| frame:', location.href.replace(/.*\?/, '?').substring(0, 60));
+  var _localQueue = [];
+  var _localPumping = false;
+  var _hasNavLocks = typeof navigator !== 'undefined' && navigator.locks
+                     && typeof navigator.locks.request === 'function';
 
   function pumpXchatHtmlJobQueue() {
-    // Safety: force-reset a stuck job after 30 s (e.g. owning frame was destroyed
-    // and the promise .finally() callback was discarded by the engine).
-    if (_q.active && _q.activeAt && Date.now() - _q.activeAt > 30000) {
-      console.warn('[xchat-q] Force-resetting stuck queue after 30 s');
-      _q.active = false;
-      _q.activeAt = 0;
-    }
-    if (_q.active) return;
-    if (!_q.queue.length) return;
+    if (_localPumping) return;
+    if (!_localQueue.length) return;
+    _localPumping = true;
 
-    var waitMs = Math.max(0, _q.nextAt - Date.now());
-    if (waitMs > 0) {
-      // No shared timer flag — each caller schedules its own timer.
-      // Duplicate timer firings are harmless: the _q.active check above
-      // ensures only one job runs at a time.
-      setTimeout(pumpXchatHtmlJobQueue, waitMs);
-      return;
+    var entry = _localQueue.shift();
+
+    function execJob() {
+      console.log('[xchat-q] START job:', entry.key, '| pending:', _localQueue.length,
+                  '| frame:', location.href.replace(/.*\?/, '?').substring(0, 60));
+      return Promise.resolve()
+        .then(entry.job)
+        .then(entry.resolve, entry.reject)
+        .then(function () {
+          console.log('[xchat-q] DONE  job:', entry.key);
+          return new Promise(function (r) { setTimeout(r, XCHAT_HTML_JOB_GAP_MS); });
+        });
     }
 
-    var entry = _q.queue.shift();
-    _q.active = true;
-    _q.activeAt = Date.now();
-    console.log('[xchat-q] START job:', entry.key, '| pending:', _q.queue.length);
-    Promise.resolve()
-      .then(entry.job)
-      .then(entry.resolve, entry.reject)
+    var jobDone;
+    if (_hasNavLocks) {
+      jobDone = navigator.locks.request('xchat-http-job', execJob);
+    } else {
+      // Fallback for very old browsers — per-frame serial only.
+      jobDone = execJob();
+    }
+
+    jobDone
+      .catch(function () { /* lock-abort or job error — continue pumping */ })
       .finally(function () {
-        console.log('[xchat-q] DONE  job:', entry.key);
-        _q.active = false;
-        _q.activeAt = 0;
-        _q.nextAt = Date.now() + XCHAT_HTML_JOB_GAP_MS;
+        _localPumping = false;
         pumpXchatHtmlJobQueue();
       });
   }
 
   function enqueueXchatHtmlJob(key, job) {
     return new Promise(function (resolve, reject) {
-      for (var i = _q.queue.length - 1; i >= 0; i--) {
-        if (_q.queue[i].key === key) {
-          _q.queue[i].resolve(null);
-          _q.queue.splice(i, 1);
+      for (var i = _localQueue.length - 1; i >= 0; i--) {
+        if (_localQueue[i].key === key) {
+          _localQueue[i].resolve(null);
+          _localQueue.splice(i, 1);
         }
       }
-      _q.queue.push({ key: key, job: job, resolve: resolve, reject: reject });
+      _localQueue.push({ key: key, job: job, resolve: resolve, reject: reject });
       pumpXchatHtmlJobQueue();
     });
   }
