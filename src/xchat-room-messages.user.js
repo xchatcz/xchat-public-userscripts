@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.5
+// @version      1.7.6
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.5';
+  var SCRIPT_VERSION = '1.7.6';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -99,6 +99,71 @@
     blockTrackingInAllFrames();
     if (++_trackBlockCount >= 10) clearInterval(_trackBlockTimer);
   }, 1000);
+
+  // ── Frame role detection ──
+  // The script runs in every frame matching @match – up to 6 instances at once.
+  // Only startframe and reloadpage make HTTP requests; others are passive.
+  var _frameOp = (function () {
+    var m = location.search.match(/[?&]op=([^&]+)/);
+    if (m) return m[1];
+    if (/history\.html/.test(location.pathname)) return 'history';
+    return 'unknown';
+  })();
+  var _frameNeedsQueue = (_frameOp === 'startframe' || _frameOp === 'reloadpage');
+
+  // ── Instance registry (BroadcastChannel) ──
+  // Each script instance announces itself so we can count and log how many
+  // are running, which are HTTP-active, and detect unexpected duplicates.
+  var _instanceId = _frameOp + ':' + Date.now() + ':' + Math.random().toString(36).substr(2, 4);
+  var _instances = {};
+  _instances[_instanceId] = _frameOp;
+
+  function _logInstances() {
+    var ids = Object.keys(_instances);
+    var summary = {};
+    for (var i = 0; i < ids.length; i++) {
+      var f = _instances[ids[i]];
+      summary[f] = (summary[f] || 0) + 1;
+    }
+    var parts = [];
+    for (var f in summary) parts.push(f + ':' + summary[f]);
+    var httpActive = 0;
+    for (var j = 0; j < ids.length; j++) {
+      var fr = _instances[ids[j]];
+      if (fr === 'startframe' || fr === 'reloadpage') httpActive++;
+    }
+    console.log('[xchat-inst] Total:', ids.length, 'instances |', parts.join(', '),
+                '| HTTP-active:', httpActive, '| me:', _instanceId);
+  }
+
+  (function setupInstanceRegistry() {
+    var ch;
+    try { ch = new BroadcastChannel('xchat-toolkit-instances'); } catch (e) {
+      console.warn('[xchat-inst] BroadcastChannel not available:', e.message);
+      _logInstances();
+      return;
+    }
+    ch.onmessage = function (e) {
+      var d = e.data;
+      if (!d || !d.id || d.id === _instanceId) return;
+      if (d.type === 'join') {
+        _instances[d.id] = d.frame;
+        ch.postMessage({ type: 'ack', id: _instanceId, frame: _frameOp });
+        _logInstances();
+      } else if (d.type === 'ack') {
+        _instances[d.id] = d.frame;
+      } else if (d.type === 'leave') {
+        delete _instances[d.id];
+        _logInstances();
+      }
+    };
+    ch.postMessage({ type: 'join', id: _instanceId, frame: _frameOp });
+    window.addEventListener('pagehide', function () {
+      try { ch.postMessage({ type: 'leave', id: _instanceId }); } catch (e) {}
+    });
+    // Log after brief delay to collect ack responses from already-running instances
+    setTimeout(_logInstances, 500);
+  })();
 
   // ── Konfigurace ──
   var CONFIG = {
@@ -186,10 +251,13 @@
   var _hasNavLocks = typeof navigator !== 'undefined' && navigator.locks
                      && typeof navigator.locks.request === 'function';
   var XCHAT_JOB_TIMEOUT_MS = 20000;
-  console.log('[xchat-q] Web Locks available:', _hasNavLocks,
-              '| frame:', location.href.replace(/.*\?/, '?').substring(0, 60));
+  if (_frameNeedsQueue) {
+    console.log('[xchat-q] Web Locks available:', _hasNavLocks,
+                '| frame:', _frameOp, '| queue: ACTIVE');
+  }
 
   function pumpXchatHtmlJobQueue() {
+    if (!_frameNeedsQueue) return;
     if (_localPumping) return;
     if (!_localQueue.length) return;
     _localPumping = true;
@@ -244,6 +312,7 @@
   }
 
   function enqueueXchatHtmlJob(key, job) {
+    if (!_frameNeedsQueue) return Promise.resolve(null);
     return new Promise(function (resolve, reject) {
       for (var i = _localQueue.length - 1; i >= 0; i--) {
         if (_localQueue[i].key === key) {
