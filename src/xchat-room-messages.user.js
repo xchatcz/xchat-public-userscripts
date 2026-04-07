@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.11
+// @version      1.7.12
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.11';
+  var SCRIPT_VERSION = '1.7.12';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -3860,27 +3860,34 @@
       .catch(function (err) {
         console.error('[xchat-fw] loadContent failed for', key, err);
         // Reset loaded flag so retry is possible
-        if (floatingWindows[key]) floatingWindows[key].loaded = false;
-        // Show error with retry link
-        body.textContent = '';
-        var errMsg = document.createElement('span');
-        errMsg.textContent = 'Nepoda\u0159ilo se na\u010d\u00edst \u0161ept. ';
-        body.appendChild(errMsg);
-        var retryLink = document.createElement('a');
-        retryLink.href = '#';
-        retryLink.textContent = 'Zkusit znovu';
-        retryLink.addEventListener('click', function (e) {
-          e.preventDefault();
-          if (floatingWindows[key] && floatingWindows[key].loadContent) floatingWindows[key].loadContent();
-        });
-        body.appendChild(retryLink);
-        // Auto-retry after 3s (auth/rid may not be ready yet after reload)
-        setTimeout(function () {
-          if (floatingWindows[key] && !floatingWindows[key].loaded) {
-            console.log('[xchat-fw] auto-retrying loadContent for', key);
-            loadContent();
-          }
-        }, 3000);
+        if (floatingWindows[key]) {
+          floatingWindows[key].loaded = false;
+          floatingWindows[key]._loadRetries = (floatingWindows[key]._loadRetries || 0) + 1;
+        }
+        var retries = floatingWindows[key] ? floatingWindows[key]._loadRetries : 99;
+        if (retries < 5) {
+          // Keep spinner visible, silently retry with increasing delay
+          var delay = retries * 2000;
+          console.log('[xchat-fw] auto-retry', retries, 'for', key, 'in', delay + 'ms');
+          setTimeout(function () {
+            if (floatingWindows[key] && !floatingWindows[key].loaded) loadContent();
+          }, delay);
+        } else {
+          // Retries exhausted — show error with manual retry link
+          body.textContent = '';
+          var errMsg = document.createElement('span');
+          errMsg.textContent = 'Nepoda\u0159ilo se na\u010d\u00edst \u0161ept. ';
+          body.appendChild(errMsg);
+          var retryLink = document.createElement('a');
+          retryLink.href = '#';
+          retryLink.textContent = 'Zkusit znovu';
+          retryLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            if (floatingWindows[key]) floatingWindows[key]._loadRetries = 0;
+            if (floatingWindows[key] && floatingWindows[key].loadContent) floatingWindows[key].loadContent();
+          });
+          body.appendChild(retryLink);
+        }
       });
     };
     if (floatingWindows[key]) floatingWindows[key].loadContent = loadContent;
