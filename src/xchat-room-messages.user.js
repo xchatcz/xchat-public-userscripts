@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.9
+// @version      1.7.10
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.9';
+  var SCRIPT_VERSION = '1.7.10';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -227,6 +227,7 @@
   var ROOM_BOARD_MAX_KEYS = 250;
   var ROOM_BOARD_TEXT_DECODER = new TextDecoder('iso-8859-2');
   var XCHAT_HTML_JOB_GAP_MS = 250;
+  var XCHAT_MAX_PENDING_JOBS = 1;
   var FW_USER_ICON_CACHE_TTL_MS = 60000;
   var FW_USER_ICON_OPEN_REFRESH_MS = 60000;
   var FW_USER_ICON_MINIMIZED_REFRESH_MS = 300000;
@@ -351,6 +352,13 @@
           _localQueue.splice(i, 1);
           deduped = true;
         }
+      }
+      // Cap queue size — if already at limit, drop this job (poll retries next cycle)
+      if (!deduped && _localQueue.length >= XCHAT_MAX_PENDING_JOBS) {
+        console.log('[xchat-q] DROP:', key, '| queue full:', _localQueue.length,
+                    '(' + _localQueue.map(function (e) { return e.key; }).join(', ') + ')');
+        resolve(null);
+        return;
       }
       _localQueue.push({ key: key, job: job, resolve: resolve, reject: reject });
       console.log('[xchat-q] ENQUEUE:', key, '| queue size:', _localQueue.length,
