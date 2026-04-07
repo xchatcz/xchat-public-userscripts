@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat.cz Toolkit
 // @namespace    https://www.xchat.cz/
-// @version      1.7.8
+// @version      1.7.9
 // @description  Práci se sklem a zprávami na něm
 // @match        https://www.xchat.cz/*/modchat?op=startframe*
 // @match        https://www.xchat.cz/*/modchat?op=infopage*
@@ -22,7 +22,7 @@
 (function () {
   'use strict';
 
-  var SCRIPT_VERSION = '1.7.8';
+  var SCRIPT_VERSION = '1.7.9';
 
   // ── Hide flexi ad sidebar (roomframeng) ── CSS injected at document-start ──
   (function () {
@@ -259,6 +259,29 @@
                 '| frame:', _frameOp, '| queue: ACTIVE');
   }
 
+  // ── Main-thread freeze detector ──
+  // A heartbeat timer fires every 1s.  If the gap between two ticks exceeds
+  // 2s, the main thread was blocked (frozen).  Logs the duration and the
+  // queue state at that moment so we can correlate with fetches / DOM work.
+  var _heartbeatLast = Date.now();
+  var _heartbeatCurrentJob = null;
+  if (_frameNeedsQueue) {
+    setInterval(function () {
+      var now = Date.now();
+      var gap = now - _heartbeatLast;
+      if (gap > 2000) {
+        var pendingKeys = _localQueue.map(function (e) { return e.key; });
+        console.warn('[xchat-freeze] MAIN THREAD BLOCKED for', gap + 'ms',
+                     '| frame:', _frameOp,
+                     '| current job:', _heartbeatCurrentJob || '(none)',
+                     '| pumping:', _localPumping,
+                     '| pending:', pendingKeys.length,
+                     pendingKeys.length ? '(' + pendingKeys.join(', ') + ')' : '');
+      }
+      _heartbeatLast = now;
+    }, 1000);
+  }
+
   function pumpXchatHtmlJobQueue() {
     if (!_frameNeedsQueue) return;
     if (_localPumping) return;
@@ -269,6 +292,7 @@
 
     function execJob() {
       var t0 = Date.now();
+      _heartbeatCurrentJob = entry.key;
       var pendingKeys = _localQueue.map(function (e) { return e.key; });
       console.log('[xchat-q] START job:', entry.key, '| pending:', pendingKeys.length,
                   pendingKeys.length ? '(' + pendingKeys.join(', ') + ')' : '');
@@ -277,6 +301,7 @@
         .then(entry.resolve, entry.reject)
         .then(function () {
           console.log('[xchat-q] DONE  job:', entry.key, '| took:', (Date.now() - t0) + 'ms');
+          _heartbeatCurrentJob = null;
           return new Promise(function (r) { setTimeout(r, XCHAT_HTML_JOB_GAP_MS); });
         });
     }
@@ -341,6 +366,24 @@
       setTimeout(fn, 0);
     }
   }
+
+  // ── Long task observer ──
+  // PerformanceObserver 'longtask' fires for any task > 50ms on the main thread.
+  // We log only tasks > 200ms to reduce noise — those are the real freeze candidates.
+  (function () {
+    if (typeof PerformanceObserver === 'undefined') return;
+    try {
+      new PerformanceObserver(function (list) {
+        list.getEntries().forEach(function (e) {
+          if (e.duration > 200) {
+            console.warn('[xchat-freeze] LONG TASK:', e.duration.toFixed(0) + 'ms',
+                         '| frame:', _frameOp,
+                         '| current job:', _heartbeatCurrentJob || '(none)');
+          }
+        });
+      }).observe({ type: 'longtask', buffered: false });
+    } catch (err) {}
+  })();
 
   // ══════════════════════════════════════════════════════════════════
   // ── Registr intervalů (timery) ──
